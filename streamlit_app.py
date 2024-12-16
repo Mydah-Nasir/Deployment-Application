@@ -352,11 +352,11 @@ def convert_dxf_to_image(dxf_uploaded_file):
     f"https://v2.convertapi.com/convert/dxf/to/png?Secret={api_key}",data=payload,
     files={"file": (dxf_uploaded_file.name, dxf_uploaded_file)}
     )
-    st.write(response.status_code)
+    # st.write(response.status_code)
     if response.status_code == 200:
         # Get the converted file URL
         result = response.json()
-        st.write(result)
+        # st.write(result)
         converted_file_url = result['Files'][0]['Url']
 
         # Download the converted PNG file
