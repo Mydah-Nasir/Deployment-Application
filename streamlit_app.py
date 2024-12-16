@@ -2,6 +2,8 @@ import streamlit as st
 import cv2
 import numpy as np
 import ezdxf
+import tempfile
+import os
 from ultralytics import YOLO
 from PIL import Image
 import requests
@@ -10,37 +12,46 @@ import io
 
 # Load the YOLO model
 model = YOLO("best.pt")  # Replace with your custom-trained YOLO model
-import ezdxf
+
 
 # Conversion factors to millimeters based on DXF units
-CONVERSION_FACTORS = {
-    0: 1.0,  # No units
-    1: 25.4,  # Inches to millimeters
-    2: 304.8,  # Feet to millimeters
-    3: 914.4,  # Yards to millimeters
-    4: 1.0,  # Millimeters (no conversion needed)
-    5: 10.0,  # Centimeters to millimeters
-    6: 100.0,  # Decimeters to millimeters
-    7: 1000.0,  # Meters to millimeters
-}
 
-def get_max_dimension_from_dxf(file_path):
+def get_max_dimension_from_dxf(uploaded_file):
     """
-    Extract the maximum dimension from a DXF file and convert it to millimeters.
+    Extract the maximum dimension from a DXF file uploaded as a file-like object and convert it to millimeters.
 
     Args:
-        file_path (str): Path to the DXF file.
+        uploaded_file (file-like object): Uploaded DXF file.
 
     Returns:
-        dict: A dictionary containing the maximum dimension and its value in millimeters.
+        float: The maximum dimension in millimeters.
     """
+    # Conversion factors for DXF units to millimeters
+    CONVERSION_FACTORS = {
+        0: 1.0,  # Unitless (default to 1.0)
+        1: 25.4,  # Inches to mm
+        2: 10.0,  # Feet to mm
+        3: 304.8,  # Yards to mm
+        4: 1000.0,  # Miles to mm
+        5: 1.0,  # Millimeters
+        6: 10.0,  # Centimeters to mm
+        7: 1000.0,  # Meters to mm
+        8: 1e6,  # Kilometers to mm
+    }
+
+    # Ensure file is not None
+    if uploaded_file is None:
+        raise ValueError("Error: No file was uploaded.")
+
     try:
-        # Load the DXF file
-        doc = ezdxf.readfile(file_path)
-    except IOError:
-        raise ValueError(f"Error: Unable to open file {file_path}")
-    except ezdxf.DXFStructureError:
-        raise ValueError(f"Error: Invalid DXF file structure in {file_path}")
+
+        # Read the DXF file from the temporary file
+        doc = ezdxf.readfile(uploaded_file)
+
+    except IOError as io_error:
+        raise ValueError(f"Error: Unable to open the uploaded file. {io_error}")
+    except ezdxf.DXFStructureError as dxf_error:
+        raise ValueError(f"Error: Invalid DXF file structure. {dxf_error}")
 
     # Access the modelspace
     msp = doc.modelspace()
@@ -51,7 +62,6 @@ def get_max_dimension_from_dxf(file_path):
 
     # Initialize variables to track the maximum dimension
     max_dimension = 0
-    max_dimension_text = ""
 
     # Iterate through all DIMENSION entities
     for dimension in msp.query("DIMENSION"):
@@ -76,12 +86,13 @@ def get_max_dimension_from_dxf(file_path):
             # Update the maximum dimension if the current one is larger
             if dim_value > max_dimension:
                 max_dimension = dim_value
-                max_dimension_text = dim_text or str(dim_value)
 
     # Convert the maximum dimension to millimeters
     max_dimension_mm = max_dimension * conversion_factor
 
     return max_dimension_mm
+
+
 
 def calculate_dimension_bounding_box_length(results, dimension_class_id):
     """
@@ -368,11 +379,21 @@ uploaded_file = st.file_uploader("Choose a file (Image or DWG/DXF)...", type=["j
 if uploaded_file is not None:
     # Check file type
     file_type = uploaded_file.name.split('.')[-1].lower()
+     # Ensure the save directory exists
+    save_dir = "uploaded_files"
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Define save path
+    save_path = os.path.join(save_dir, uploaded_file.name)
+
+    # Save the file
+    with open(save_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
 
     if file_type in ["jpg", "png", "jpeg"]:
         # Process image
         image = Image.open(uploaded_file)
-        st.image(image, caption="Uploaded Image", use_column_width=True)
+        st.image(image, caption="Uploaded Image", use_container_width=True)
 
         # Convert PIL Image to OpenCV format
         img_array = np.array(image)
@@ -380,10 +401,10 @@ if uploaded_file is not None:
 
     elif file_type in ["dwg", "dxf"]:
         # Convert DWG/DXF to image using ConvertAPI
-        try:
+        try: 
             image = convert_dxf_to_image(uploaded_file)
-            max_dimension = get_max_dimension_from_dxf(uploaded_file)
-            st.image(image, caption="Converted DXF/DWG to Image", use_column_width=True)
+            max_dimension = get_max_dimension_from_dxf(save_path)
+            st.image(image, caption="Converted DXF/DWG to Image", use_container_width=True)
 
             # Convert PIL Image to OpenCV format
             img_array = np.array(image)
@@ -405,12 +426,15 @@ if uploaded_file is not None:
         wall_intersections, wall_lengths, wall_coordinates, obstructions = detect_wall_intersections_and_obstructions(
         results, wall_class_id, obstruction_class_ids)
         longest_length = longest_dimension_bbox['length']
-        scale_factor = longest_length/max_dimension
+        if max_dimension > 0:
+            scale_factor = longest_length/max_dimension
+        else:
+            scale_factor = 62.5
         # Now you can pass these results to the column placement function
         columns = place_columns_with_conditions(wall_intersections,wall_lengths,wall_coordinates, scale_factor, obstructions)
         # Annotate the image
         annotated_frame = results[0].plot()  # YOLO annotates the frame
         annotated_frame_2 = plot_columns_on_annotated_frame(annotated_frame, columns)
         # Display the annotated image
-        st.image(annotated_frame, caption="Annotated Image", use_column_width=True)
-        st.image(annotated_frame_2, caption="Annotated Image", use_column_width=True)
+        st.image(annotated_frame, caption="Annotated Image", use_container_width=True)
+        st.image(annotated_frame_2, caption="Image with columns", use_container_width=True)
