@@ -11,7 +11,7 @@ import math
 import io
 
 # Load the YOLO model
-model = YOLO("best.pt")  # Replace with your custom-trained YOLO model
+model = YOLO("best (6).pt")  # Replace with your custom-trained YOLO model
 
 
 # Conversion factors to millimeters based on DXF units
@@ -429,12 +429,13 @@ if uploaded_file is not None:
         if max_dimension > 0:
             scale_factor = longest_length/max_dimension
         else:
-            scale_factor = 62.5
+            #scale_factor = 50
+            scale_factor = longest_length/41795
         # Now you can pass these results to the column placement function
         columns = place_columns_with_conditions(wall_intersections,wall_lengths,wall_coordinates, scale_factor, obstructions)
         # Annotate the image
         annotated_frame = results[0].plot()  # YOLO annotates the frame
-        annotated_frame_2 = plot_columns_on_annotated_frame(annotated_frame, columns)
+        annotated_frame_2 = plot_columns_on_annotated_frame(img_bgr, columns)
         # Display the annotated image
         st.image(annotated_frame, caption="Annotated Image", use_container_width=True)
         st.image(annotated_frame_2, caption="Image with columns", use_container_width=True)
