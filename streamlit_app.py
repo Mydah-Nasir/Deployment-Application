@@ -551,14 +551,26 @@ if uploaded_file is not None:
         st.write("### Segmented Images")
         combined_wall_results = []
         combined_dw_results = []
+        class_labels = {0: "Door", 1: "Window"}  # Replace class IDs with labels
+        class_colors = {0: (0, 0, 255), 1: (0, 255, 0)}  # Assign unique colors for each class
         for i, img in enumerate(segmented_images, 1):
             results_wall = model_wall(img)
             annotated_frame = results_wall[0].plot()
             combined_wall_results.append(results_wall)
             results_dw = model_door_win(img)
-            results_annotate = model_door_win(annotated_frame)
             combined_dw_results.append(results_dw)
-            annotated_frame = results_annotate[0].plot()
+            for box, conf, cls in zip(results_dw[0].boxes.xyxy, results_dw[0].boxes.conf, results_dw[0].boxes.cls):
+                x1, y1, x2, y2 = map(int, box)  # Extract box coordinates
+                label = f"{class_labels[int(cls)]} {conf:.2f}"  # Create label with class name and confidence
+                color = class_colors[int(cls)]  # Get color for the class
+        
+                # Draw rectangle for the box
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+        
+                # Draw the label
+                (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+                cv2.rectangle(annotated_frame, (x1, y1 - text_height - baseline), (x1 + text_width, y1), color, -1)  # Label background
+                cv2.putText(annotated_frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
             st.image(annotated_frame, caption=f"Annotated Image {i}", use_container_width=True)
         # annotated_frame = results[0].plot()  # YOLO annotates the frame
         # annotated_frame_2 = plot_columns_on_annotated_frame(img_bgr, columns)
