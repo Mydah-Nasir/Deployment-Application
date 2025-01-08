@@ -12,7 +12,8 @@ import io
 
 # Load the YOLO model
 model = YOLO("best (6).pt")  # Replace with your custom-trained YOLO model
-
+model_door_win = YOLO("best door and window.pt")
+model_wall = YOLO("latest walls.pt")
 
 # Conversion factors to millimeters based on DXF units
 
@@ -368,13 +369,103 @@ def convert_dxf_to_image(dxf_uploaded_file):
             raise Exception("Failed to download converted file from ConvertAPI.")
     else:
         raise Exception(f"ConvertAPI request failed with status code {response.status_code}: {response.text}")
+def convert_pdf_to_image(pdf_uploaded_file):
+    """
+    Convert a PDF file to an image using convertapi.com.
+
+    Args:
+        pdf_uploaded_file: A file-like object representing the uploaded PDF file.
+
+    Returns:
+        PIL.Image object of the first page of the converted PDF.
+    """
+    api_key = "secret_ErbOTw4sYs7t3O5Y"  # Replace with your ConvertAPI key
+
+    # Upload the PDF file to convertapi.com
+    payload = {'StoreFile': 'true'}
+    response = requests.post(
+        f"https://v2.convertapi.com/convert/pdf/to/png?Secret={api_key}",
+        data=payload,
+        files={"file": (pdf_uploaded_file.name, pdf_uploaded_file)}
+    )
+
+    if response.status_code == 200:
+        # Parse the result
+        result = response.json()
+
+        # Get the URL of the first converted PNG file
+        converted_file_url = result['Files'][0]['Url']
+
+        # Download the converted PNG file
+        converted_file_response = requests.get(converted_file_url)
+        if converted_file_response.status_code == 200:
+            # Load the downloaded PNG as a PIL image
+            return Image.open(io.BytesIO(converted_file_response.content))
+        else:
+            raise Exception("Failed to download converted file from ConvertAPI.")
+    else:
+        raise Exception(f"ConvertAPI request failed with status code {response.status_code}: {response.text}")
+def segment_image(image_path):
+    """
+    Segments an image into four equal parts and returns them as Image objects.
+
+    Args:
+        image_path (str): Path to the input image.
+
+    Returns:
+        List of Image objects for the segmented images.
+    """
+    # Open the image
+    image = Image.open(image_path)
+    width, height = image.size
+
+    #finding longer dimension
+    longer_dim = width
+    if width < height:
+        longer_dim = height
+    if ((height > 2000) and (width > 1000)) or ((width > 2000) and (height > 1000)):
+        # Calculate the dimensions for each segment
+        mid_width = width // 2
+        mid_height = height // 2
+
+        # Define bounding boxes for the four segments
+        boxes = [
+            (0, 0, mid_width, mid_height),  # Top-left
+            (mid_width, 0, width, mid_height),  # Top-right
+            (0, mid_height, mid_width, height),  # Bottom-left
+            (mid_width, mid_height, width, height),  # Bottom-right
+        ]
+    elif longer_dim > 1000:
+        if width >= height:
+            # Split vertically if the width is the longer dimension
+            mid_point = width // 2
+            boxes = [
+                (0, 0, mid_point, height),  # Left half
+                (mid_point, 0, width, height),  # Right half
+            ]
+        else:
+            # Split horizontally if the height is the longer dimension
+            mid_point = height // 2
+            boxes = [
+                (0, 0, width, mid_point),  # Top half
+                (0, mid_point, width, height),  # Bottom half
+            ]
+    else:
+        boxes = [
+            (0, 0, width, height)
+        ]
+
+    # Crop each segment and store them
+    segmented_images = [image.crop(box) for box in boxes]
+
+    return segmented_images
 
 # Streamlit UI
 st.title("Image & CAD File Upload with YOLO Annotation")
 st.write("Upload an image or DWG/DXF file, and the YOLO model will process it.")
 
 # File uploader
-uploaded_file = st.file_uploader("Choose a file (Image or DWG/DXF)...", type=["jpg", "png", "jpeg", "dwg", "dxf"])
+uploaded_file = st.file_uploader("Choose a file (Image, PDF or DWG/DXF)...", type=["jpg", "png", "jpeg","pdf","dwg", "dxf"])
 
 if uploaded_file is not None:
     # Check file type
@@ -398,7 +489,29 @@ if uploaded_file is not None:
         # Convert PIL Image to OpenCV format
         img_array = np.array(image)
         img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+    
+    elif file_type in ["pdf", "dxf"]:
+        # Convert DWG/DXF to image using ConvertAPI
+        # Extract the base name without extension
+        uploaded_file_name = uploaded_file.name
+        base_name = os.path.splitext(uploaded_file_name)[0]
 
+        # Ensure the save directory exists
+        os.makedirs(save_dir, exist_ok=True)
+
+        # Define save path with a PNG extension
+        save_path = os.path.join(save_dir, f"{base_name}.png")
+        try: 
+            image = convert_pdf_to_image(uploaded_file)
+            image.save(save_path, format="PNG")
+            st.image(image, caption="Converted PDF to Image", use_container_width=True)
+
+            # Convert PIL Image to OpenCV format
+            img_array = np.array(image)
+            img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        except Exception as e:
+            st.error(f"Error converting DXF/DWG to image: {e}")
+            img_bgr = None
     elif file_type in ["dwg", "dxf"]:
         # Convert DWG/DXF to image using ConvertAPI
         try: 
@@ -418,24 +531,37 @@ if uploaded_file is not None:
 
     # Run YOLO model if an image is available
     if img_bgr is not None:
-        results = model(img_bgr)
-        dimension_class_id = 0  # Replace with your dimension class ID
-        longest_dimension_bbox = calculate_dimension_bounding_box_length(results, dimension_class_id)
-        wall_class_id = 2  # Replace with your wall class ID
-        obstruction_class_ids = [1, 3]  # Replace with your obstruction class IDs
-        wall_intersections, wall_lengths, wall_coordinates, obstructions = detect_wall_intersections_and_obstructions(
-        results, wall_class_id, obstruction_class_ids)
-        longest_length = longest_dimension_bbox['length']
-        if max_dimension > 0:
-            scale_factor = longest_length/max_dimension
-        else:
-            #scale_factor = 50
-            scale_factor = longest_length/41795
+        segmented_images = segment_image(save_path)
+        # results = model(img_bgr)
+        # dimension_class_id = 0  # Replace with your dimension class ID
+        # longest_dimension_bbox = calculate_dimension_bounding_box_length(results, dimension_class_id)
+        # wall_class_id = 2  # Replace with your wall class ID
+        # obstruction_class_ids = [1, 3]  # Replace with your obstruction class IDs
+        # wall_intersections, wall_lengths, wall_coordinates, obstructions = detect_wall_intersections_and_obstructions(
+        # results, wall_class_id, obstruction_class_ids)
+        # longest_length = longest_dimension_bbox['length']
+        # if max_dimension > 0:
+        #     scale_factor = longest_length/max_dimension
+        # else:
+        #     scale_factor = 50
+            #scale_factor = longest_length/41795
         # Now you can pass these results to the column placement function
-        columns = place_columns_with_conditions(wall_intersections,wall_lengths,wall_coordinates, scale_factor, obstructions)
+        # columns = place_columns_with_conditions(wall_intersections,wall_lengths,wall_coordinates, scale_factor, obstructions)
         # Annotate the image
-        annotated_frame = results[0].plot()  # YOLO annotates the frame
-        annotated_frame_2 = plot_columns_on_annotated_frame(img_bgr, columns)
+        st.write("### Segmented Images")
+        combined_wall_results = []
+        combined_dw_results = []
+        for i, img in enumerate(segmented_images, 1):
+            results_wall = model_wall(img)
+            annotated_frame = results_wall[0].plot()
+            combined_wall_results.append(results_wall)
+            results_dw = model_door_win(img)
+            results_annotate = model_door_win(annotated_frame)
+            combined_dw_results.append(results_dw)
+            annotated_frame = results_annotate[0].plot()
+            st.image(annotated_frame, caption=f"Annotated Image {i}", use_container_width=True)
+        # annotated_frame = results[0].plot()  # YOLO annotates the frame
+        # annotated_frame_2 = plot_columns_on_annotated_frame(img_bgr, columns)
         # Display the annotated image
-        st.image(annotated_frame, caption="Annotated Image", use_container_width=True)
-        st.image(annotated_frame_2, caption="Image with columns", use_container_width=True)
+        # st.image(annotated_frame, caption="Annotated Image", use_container_width=True)
+        # st.image(annotated_frame_2, caption="Image with columns", use_container_width=True)
