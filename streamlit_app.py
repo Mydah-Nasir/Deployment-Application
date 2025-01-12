@@ -395,6 +395,45 @@ def convert_pdf_to_image(pdf_uploaded_file):
             raise Exception("Failed to download converted file from ConvertAPI.")
     else:
         raise Exception(f"ConvertAPI request failed with status code {response.status_code}: {response.text}")
+def merge_images(segmented_images, original_width, original_height):
+    """
+    Merges segmented images back into the original image.
+
+    Args:
+        segmented_images (list): List of segmented Image objects.
+        original_width (int): Width of the original image.
+        original_height (int): Height of the original image.
+
+    Returns:
+        Merged Image object.
+    """
+    # Create a blank canvas for the original image
+    merged_image = Image.new("RGB", (original_width, original_height))
+
+    if len(segmented_images) == 4:  # 2x2 grid
+        mid_width = original_width // 2
+        mid_height = original_height // 2
+
+        # Paste the images into the respective quadrants
+        merged_image.paste(segmented_images[0], (0, 0))  # Top-left
+        merged_image.paste(segmented_images[1], (mid_width, 0))  # Top-right
+        merged_image.paste(segmented_images[2], (0, mid_height))  # Bottom-left
+        merged_image.paste(segmented_images[3], (mid_width, mid_height))  # Bottom-right
+
+    elif len(segmented_images) == 2:  # Split into halves
+        if original_width >= original_height:  # Vertical split
+            mid_width = original_width // 2
+            merged_image.paste(segmented_images[0], (0, 0))  # Left half
+            merged_image.paste(segmented_images[1], (mid_width, 0))  # Right half
+        else:  # Horizontal split
+            mid_height = original_height // 2
+            merged_image.paste(segmented_images[0], (0, 0))  # Top half
+            merged_image.paste(segmented_images[1], (0, mid_height))  # Bottom half
+
+    elif len(segmented_images) == 1:  # Single image (no segmentation)
+        merged_image = segmented_images[0]
+
+    return merged_image
 def segment_image(image_path):
     """
     Segments an image into four equal parts and returns them as Image objects.
@@ -534,6 +573,8 @@ if uploaded_file is not None:
     # Run YOLO model if an image is available
     if img_bgr is not None:
         segmented_images = segment_image(save_path)
+        original_image = Image.open(save_path)
+        original_width, original_height = original_image.size
         # results = model(img_bgr)
         # dimension_class_id = 0  # Replace with your dimension class ID
         # longest_dimension_bbox = calculate_dimension_bounding_box_length(results, dimension_class_id)
@@ -557,6 +598,7 @@ if uploaded_file is not None:
         class_labels_wall = {0: "Wall"}
         class_colors = {0: (0, 0, 255), 1: (0, 255, 0)}  # Assign unique colors for each class
         class_colors_wall = {0: (255,0,0)}
+        annotated_images = []
         for i, img in enumerate(segmented_images, 1):
             # Annotate image for wall results
             results_wall = model_wall(img)
@@ -596,10 +638,13 @@ if uploaded_file is not None:
             # Display combined annotation for wall and door/window
             st.image(annotated_frame_wall, caption=f"Annotated Image {i}", use_container_width=True)
             annotated_frame_2 = plot_columns_on_annotated_frame(annotated_frame_wall, columns)
-            st.image(annotated_frame_2, caption="Image with wall intersections", use_container_width=True)
+            # st.image(annotated_frame_2, caption="Image with wall intersections", use_container_width=True)
             annotated_frame_3 = plot_window_intersections(annotated_frame_wall, intersections_win)
-            st.image(annotated_frame_3, caption="Image with window intersections", use_container_width=True)
-
+            annotated_image_pil = Image.fromarray(annotated_frame_wall)
+            annotated_images.append(annotated_image_pil)
+            # st.image(annotated_frame_3, caption="Image with window intersections", use_container_width=True)
+        merged_image = merge_images(annotated_images, original_width, original_height)
+        st.image(merged_image, caption="Combined Images", use_container_width=True)
         # annotated_frame = results[0].plot()  # YOLO annotates the frame
         # annotated_frame_2 = plot_columns_on_annotated_frame(img_bgr, columns)
         # Display the annotated image
