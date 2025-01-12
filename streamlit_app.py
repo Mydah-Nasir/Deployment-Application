@@ -140,34 +140,36 @@ def calculate_dimension_bounding_box_length(results, dimension_class_id):
             }
 
     return longest_bbox
-
-def find_intersection_points(box1, box2):
+def find_intersection_center(box1, box2):
     """
-    Find the intersection points of two bounding boxes.
+    Find the center point of the intersection of two bounding boxes.
 
     Args:
         box1 (tuple): First bounding box [x_min, y_min, x_max, y_max].
         box2 (tuple): Second bounding box [x_min, y_min, x_max, y_max].
 
     Returns:
-        list: Intersection points if any, otherwise an empty list.
+        tuple: Center point of the intersection if any, otherwise None.
     """
     x_min1, y_min1, x_max1, y_max1 = box1
     x_min2, y_min2, x_max2, y_max2 = box2
 
+    # Calculate the coordinates of the intersection box
     inter_x_min = max(x_min1, x_min2)
     inter_y_min = max(y_min1, y_min2)
     inter_x_max = min(x_max1, x_max2)
     inter_y_max = min(y_max1, y_max2)
 
+    # Check if there is a valid intersection
     if inter_x_min < inter_x_max and inter_y_min < inter_y_max:
-        return [
-            (inter_x_min, inter_y_min),
-            (inter_x_max, inter_y_min),
-            (inter_x_min, inter_y_max),
-            (inter_x_max, inter_y_max),
-        ]
-    return []
+        # Calculate the center of the intersection box
+        center_x = (inter_x_min + inter_x_max) / 2
+        center_y = (inter_y_min + inter_y_max) / 2
+        return (center_x, center_y)
+
+    # No intersection
+    return None
+
 def calculate_wall_length(box):
         """
         Calculate the real-world length of a wall given its bounding box.
@@ -181,25 +183,19 @@ def calculate_wall_length(box):
         x_min, y_min, x_max, y_max = box
         return math.sqrt((x_max - x_min) ** 2 + (y_max - y_min) ** 2)
 
-def detect_wall_intersections_and_obstructions(results, wall_class_id, obstruction_class_ids):
+def detect_wall_intersections(results):
     """
     Detect intersections between walls and extract obstructions (e.g., doors, windows) using YOLO predictions.
 
     Args:
         results: Inference results from the YOLO model.
-        wall_class_id (int): Class ID for walls.
-        obstruction_class_ids (list): List of class IDs for obstructions.
 
     Returns:
-        tuple:
-            wall_intersections (list of intersection points),
-            wall_lengths (list of wall lengths),
-            wall_coordinates (list of bounding box coordinates),
-            obstructions (list of bounding boxes for obstructions).
+        list: List of center points of intersections between walls.
     """
     # Initialize wall detections and obstruction detections
+    wall_class_id = 0
     wall_detections = []
-    obstructions = []
 
     # Iterate over detected boxes
     for box in results[0].boxes:
@@ -212,46 +208,73 @@ def detect_wall_intersections_and_obstructions(results, wall_class_id, obstructi
             x_min, y_min, x_max, y_max = xyxy
             wall_detections.append((x_min, y_min, x_max, y_max))
 
-        # Filter detections for obstructions
-        if class_id in obstruction_class_ids:
-            x_min, y_min, x_max, y_max = xyxy
-            obstructions.append((x_min, y_min, x_max, y_max))
-
-    # Initialize outputs
+    # Initialize output
     wall_intersections = []
-    wall_lengths = []
-    wall_coordinates = []
 
     num_boxes = len(wall_detections)
 
     for i in range(num_boxes):
         box1 = wall_detections[i]
-        wall_lengths.append(calculate_wall_length(box1))
-        wall_coordinates.append((box1[0], box1[1], box1[2], box1[3]))
 
         for j in range(i + 1, num_boxes):
             box2 = wall_detections[j]
-            intersection = find_intersection_points(box1, box2)
-            if intersection:
-                wall_intersections.extend(intersection)
+            intersection_center = find_intersection_center(box1, box2)
+            if intersection_center:
+                wall_intersections.append(intersection_center)
 
-    # Return the required outputs
-    return wall_intersections, wall_lengths, wall_coordinates, obstructions
+    # Return the list of intersection centers
+    return wall_intersections
 
-def place_columns_with_conditions(intersections, wall_lengths, wall_coordinates, scale_factor, obstructions, threshold=7000, min_interval=3000, max_interval=7000):
+def detect_window_intersections(results):
+    """
+    Detect intersections between walls and extract obstructions (e.g., doors, windows) using YOLO predictions.
+
+    Args:
+        results: Inference results from the YOLO model.
+
+    Returns:
+        list: List of center points of intersections between walls.
+    """
+    # Initialize wall detections and obstruction detections
+    window_class_id = 1
+    window_detections = []
+
+    # Iterate over detected boxes
+    for box in results[0].boxes:
+        xyxy = box.xyxy[0].cpu().numpy()  # Coordinates (x_min, y_min, x_max, y_max)
+        conf = box.conf[0].cpu().numpy()  # Confidence score
+        class_id = int(box.cls[0].cpu().numpy())  # Class ID
+
+        # Filter detections for walls
+        if class_id == window_class_id:
+            x_min, y_min, x_max, y_max = xyxy
+            window_detections.append((x_min, y_min, x_max, y_max))
+
+    # Initialize output
+    window_intersections = []
+
+    num_boxes = len(window_detections)
+
+    for i in range(num_boxes):
+        box1 = window_detections[i]
+
+        for j in range(i + 1, num_boxes):
+            box2 = window_detections[j]
+            intersection_center = find_intersection_center(box1, box2)
+            if intersection_center:
+                window_intersections.append(intersection_center)
+
+    # Return the list of intersection centers
+    return window_intersections
+
+
+def place_columns_with_conditions(intersections):
     """
     Place columns at intersections and along walls based on the original wall length after scaling,
     ensuring the distance between columns is within specified bounds and avoiding obstructions.
 
     Args:
-        intersections (list): List of intersection points (x, y).
-        wall_lengths (list): List of bounding box lengths of walls.
-        wall_coordinates (list): List of bounding box coordinates for walls [(x_min, y_min, x_max, y_max)].
-        scale_factor (float): Factor to convert bounding box length to actual length.
-        obstructions (list): List of bounding boxes for doors/windows [(x_min, y_min, x_max, y_max)].
-        threshold (float): Minimum wall length (in meters) to start placing additional columns.
-        min_interval (float): Minimum distance (in meters) between additional columns.
-        max_interval (float): Maximum distance (in meters) between additional columns.
+        intersections (list): List of intersection center points (x, y).
 
     Returns:
         list: List of column coordinates (x, y) to place on the image.
@@ -262,64 +285,9 @@ def place_columns_with_conditions(intersections, wall_lengths, wall_coordinates,
     for intersection in intersections:
         columns.append(intersection)
 
-    # Process each wall
-    for i, (bbox_length, bbox_coords) in enumerate(zip(wall_lengths, wall_coordinates)):
-        # Convert bounding box length to real-world length
-        real_length = bbox_length * scale_factor
-
-        # Add columns at wall start and end
-        x_min, y_min, x_max, y_max = bbox_coords
-        columns.append((x_min, y_min))  # Start of the wall
-        columns.append((x_max, y_max))  # End of the wall
-
-        # Place additional columns if wall length exceeds the threshold
-        if real_length > threshold:
-            # Calculate interval based on real length, ensuring it falls between min_interval and max_interval
-            num_intervals = max(1, math.ceil(real_length / max_interval))  # At least one column
-            interval = real_length / num_intervals
-            if interval < min_interval:
-                interval = min_interval  # Adjust to meet the minimum interval requirement
-
-            # Determine the direction vector for the wall
-            dx = (x_max - x_min) / bbox_length
-            dy = (y_max - y_min) / bbox_length
-
-            # Place columns at equal intervals along the wall
-            for n in range(1, num_intervals):
-                # Scale the interval to the bounding box
-                interval_scaled = n * interval / scale_factor
-                column_x = x_min + dx * interval_scaled
-                column_y = y_min + dy * interval_scaled
-
-                # Check if the column is inside an obstruction
-                column_inside_obstruction = False
-                for obs in obstructions:
-                    obs_x_min, obs_y_min, obs_x_max, obs_y_max = obs
-                    if obs_x_min <= column_x <= obs_x_max and obs_y_min <= column_y <= obs_y_max:
-                        column_inside_obstruction = True
-
-                        # Calculate distances to start and end of the obstruction
-                        dist_to_start = ((column_x - obs_x_min)**2 + (column_y - obs_y_min)**2)**0.5
-                        dist_to_end = ((column_x - obs_x_max)**2 + (column_y - obs_y_max)**2)**0.5
-
-                        # Place column before or after the obstruction
-                        if dist_to_start < dist_to_end:
-                            # Before the obstruction
-                            column_x = obs_x_min - abs(dx) * (min_interval / scale_factor)
-                            column_y = obs_y_min - abs(dy) * (min_interval / scale_factor)
-                            print(f"Column adjusted to before obstruction: ({column_x}, {column_y})")
-                        else:
-                            # After the obstruction
-                            column_x = obs_x_max + abs(dx) * (min_interval / scale_factor)
-                            column_y = obs_y_max + abs(dy) * (min_interval / scale_factor)
-                            print(f"Column adjusted to after obstruction: ({column_x}, {column_y})")
-
-                        break  # Exit obstruction loop once handled
-
-                # Add the column if valid
-                columns.append((column_x, column_y))
-
     return columns
+
+
 def plot_columns_on_annotated_frame(annotated_frame, columns):
     """
     Plot column coordinates onto the annotated frame and return the updated frame.
@@ -338,10 +306,32 @@ def plot_columns_on_annotated_frame(annotated_frame, columns):
     # Plot each column as a circle
     for column in columns:
         x, y = map(int, column)  # Convert coordinates to integers
-        cv2.circle(annotated_frame, (x, y), radius=5, color=(0, 0, 255), thickness=-1)  # Red circle
-
+        cv2.circle(annotated_frame, (x, y), radius=15, color=(255, 0, 0), thickness=-1) 
     # Return the updated frame
     return annotated_frame
+
+def plot_window_intersections(annotated_frame, intersections):
+    """
+    Plot intersections coordinates onto the annotated frame and return the updated frame.
+
+    Args:
+        annotated_frame (numpy.ndarray): Annotated frame generated from `results[0].plot()`.
+        intersections (list): List of intersections coordinates (x, y) to plot.
+
+    Returns:
+        numpy.ndarray: The updated annotated frame with intersections plotted.
+    """
+    # Ensure the frame is valid
+    if annotated_frame is None:
+        raise ValueError("Error: Annotated frame is not valid.")
+
+    # Plot each intersection as a circle
+    for intersection in intersections:
+        x, y = map(int, intersection)  # Convert coordinates to integers
+        cv2.circle(annotated_frame, (x, y), radius=15, color=(0, 255, 0), thickness=-1) 
+    # Return the updated frame
+    return annotated_frame
+
 
 def convert_dxf_to_image(dxf_uploaded_file):
     """Convert a DXF file to an image using convertapi.com."""
@@ -552,28 +542,53 @@ if uploaded_file is not None:
         combined_wall_results = []
         combined_dw_results = []
         class_labels = {0: "Door", 1: "Window"}  # Replace class IDs with labels
+        class_labels_wall = {0: "Wall"}
         class_colors = {0: (0, 0, 255), 1: (0, 255, 0)}  # Assign unique colors for each class
+        class_colors_wall = {0: (255,0,0)}
         for i, img in enumerate(segmented_images, 1):
+            # Annotate image for wall results
             results_wall = model_wall(img)
-            annotated_frame = results_wall[0].plot()
             combined_wall_results.append(results_wall)
+            intersections = detect_wall_intersections(results_wall)
+            columns = place_columns_with_conditions(intersections)
+
+            # Create a copy of the original image for wall annotation
+            annotated_frame_wall = np.array(img)
+
+            for box, conf, cls in zip(results_wall[0].boxes.xyxy, results_wall[0].boxes.conf, results_wall[0].boxes.cls):
+                x1, y1, x2, y2 = map(int, box)  # Extract box coordinates
+                label = f"{class_labels_wall[int(cls)]} {conf:.2f}"  # Label for wall class
+                color = class_colors_wall[int(cls)]  # Color for wall class
+
+                # Draw rectangle for the box
+                cv2.rectangle(annotated_frame_wall, (x1, y1), (x2, y2), color, 2)
+
+            # Annotate image for door/window results on the same frame
             results_dw = model_door_win(img)
             combined_dw_results.append(results_dw)
+            intersections_win = detect_window_intersections(results_dw)
+
             for box, conf, cls in zip(results_dw[0].boxes.xyxy, results_dw[0].boxes.conf, results_dw[0].boxes.cls):
                 x1, y1, x2, y2 = map(int, box)  # Extract box coordinates
-                label = f"{class_labels[int(cls)]} {conf:.2f}"  # Create label with class name and confidence
-                color = class_colors[int(cls)]  # Get color for the class
-        
+                label = f"{class_labels[int(cls)]} {conf:.2f}"  # Label for door/window class
+                color = class_colors[int(cls)]  # Color for door/window class
+
                 # Draw rectangle for the box
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-        
+                cv2.rectangle(annotated_frame_wall, (x1, y1), (x2, y2), color, 2)
+
                 # Draw the label
-                (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-                cv2.rectangle(annotated_frame, (x1, y1 - text_height - baseline), (x1 + text_width, y1), color, -1)  # Label background
-                cv2.putText(annotated_frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-            st.image(annotated_frame, caption=f"Annotated Image {i}", use_container_width=True)
+                # (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+                # cv2.rectangle(annotated_frame_wall, (x1, y1 - text_height - baseline), (x1 + text_width, y1), color, -1)  # Label background
+                # cv2.putText(annotated_frame_wall, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+
+            # Display combined annotation for wall and door/window
+            st.image(annotated_frame_wall, caption=f"Annotated Image {i}", use_container_width=True)
+            annotated_frame_2 = plot_columns_on_annotated_frame(annotated_frame_wall, columns)
+            st.image(annotated_frame_2, caption="Image with wall intersections", use_container_width=True)
+            annotated_frame_3 = plot_window_intersections(annotated_frame_wall, intersections_win)
+            st.image(annotated_frame_3, caption="Image with window intersections", use_container_width=True)
+
         # annotated_frame = results[0].plot()  # YOLO annotates the frame
         # annotated_frame_2 = plot_columns_on_annotated_frame(img_bgr, columns)
         # Display the annotated image
         # st.image(annotated_frame, caption="Annotated Image", use_container_width=True)
-        # st.image(annotated_frame_2, caption="Image with columns", use_container_width=True)
