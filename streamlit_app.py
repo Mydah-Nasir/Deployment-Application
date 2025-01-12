@@ -335,7 +335,7 @@ def plot_window_intersections(annotated_frame, intersections):
 
 def convert_dxf_to_image(dxf_uploaded_file):
     """Convert a DXF file to an image using convertapi.com."""
-    api_key = "secret_ErbOTw4sYs7t3O5Y"  # Replace with your ConvertAPI key
+    api_key = "secret_178fvDmZ6YFbSaKl"  # Replace with your ConvertAPI key
 
     # Upload the DXF file to convertapi.com
     payload = {'StoreFile': 'true'}
@@ -369,7 +369,7 @@ def convert_pdf_to_image(pdf_uploaded_file):
     Returns:
         PIL.Image object of the first page of the converted PDF.
     """
-    api_key = "secret_ErbOTw4sYs7t3O5Y"  # Replace with your ConvertAPI key
+    api_key = "secret_178fvDmZ6YFbSaKl"  # Replace with your ConvertAPI key
 
     # Upload the PDF file to convertapi.com
     payload = {'StoreFile': 'true'}
@@ -451,6 +451,18 @@ def segment_image(image_path):
     return segmented_images
 
 # Streamlit UI
+# Streamlit app title
+st.title("YOLOv8 Weight Selector")
+
+# Dropdown for selecting wall type
+wall_type = st.selectbox(
+    "Select Wall Type:",
+    ("Hashed Walls", "Plain Walls")
+)
+
+weights = "hashed_wall.pt" if wall_type == "Hashed Walls" else "latest walls.pt"
+model_wall = YOLO(weights)
+
 st.title("Image & CAD File Upload with YOLO Annotation")
 st.write("Upload an image or DWG/DXF file, and the YOLO model will process it.")
 
