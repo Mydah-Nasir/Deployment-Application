@@ -12,7 +12,7 @@ import io
 
 # Load the YOLO model
 model = YOLO("best (6).pt")  # Replace with your custom-trained YOLO model
-model_door_win = YOLO("best door and window.pt")
+model_door_win = YOLO("doors and windows original.pt")
 model_wall = YOLO("latest walls.pt")
 
 # Conversion factors to millimeters based on DXF units
@@ -140,16 +140,35 @@ def calculate_dimension_bounding_box_length(results, dimension_class_id):
             }
 
     return longest_bbox
+import math
+
+def calculate_distance(coord1, coord2):
+    """
+    Calculate the Euclidean distance between two coordinates in 2D space.
+
+    Args:
+        coord1 (tuple): The first coordinate as (x1, y1).
+        coord2 (tuple): The second coordinate as (x2, y2).
+
+    Returns:
+        float: The distance between the two coordinates.
+    """
+    x1, y1 = coord1
+    x2, y2 = coord2
+    distance = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+    return distance
+
 def find_intersection_center(box1, box2):
     """
-    Find the center point of the intersection of two bounding boxes.
+    Find the center point of the intersection of two bounding boxes only if they are aligned
+    in different directions (one in x-direction, the other in y-direction).
 
     Args:
         box1 (tuple): First bounding box [x_min, y_min, x_max, y_max].
         box2 (tuple): Second bounding box [x_min, y_min, x_max, y_max].
 
     Returns:
-        tuple: Center point of the intersection if any, otherwise None.
+        tuple: Center point of the intersection if conditions are met, otherwise None.
     """
     x_min1, y_min1, x_max1, y_max1 = box1
     x_min2, y_min2, x_max2, y_max2 = box2
@@ -162,13 +181,164 @@ def find_intersection_center(box1, box2):
 
     # Check if there is a valid intersection
     if inter_x_min < inter_x_max and inter_y_min < inter_y_max:
+        # Determine alignment of each box
+        width1, height1 = x_max1 - x_min1, y_max1 - y_min1
+        width2, height2 = x_max2 - x_min2, y_max2 - y_min2
+
+        # Check if one box is x-aligned and the other is y-aligned
+        if (width1 > height1 and height2 > width2) or (height1 > width1 and width2 > height2):
+            # Calculate the center of the intersection box
+            center_x = (inter_x_min + inter_x_max) / 2
+            center_y = (inter_y_min + inter_y_max) / 2
+            return (center_x, center_y)
+
+    # No intersection or boxes are in the same direction
+    return None
+
+def find_intersection_curve(box1, box2):
+    """
+    Find the center point of the intersection of two bounding boxes only if they are aligned
+    in different directions (one in x-direction, the other in y-direction).
+
+    Args:
+        box1 (tuple): First bounding box [x_min, y_min, x_max, y_max].
+        box2 (tuple): Second bounding box [x_min, y_min, x_max, y_max].
+
+    Returns:
+        tuple: Center point of the intersection if conditions are met, otherwise None.
+    """
+    x_min1, y_min1, x_max1, y_max1 = box1
+    x_min2, y_min2, x_max2, y_max2 = box2
+
+    # Calculate the coordinates of the intersection box
+    inter_x_min = max(x_min1, x_min2)
+    inter_y_min = max(y_min1, y_min2)
+    inter_x_max = min(x_max1, x_max2)
+    inter_y_max = min(y_max1, y_max2)
+
+    # Check if there is a valid intersection
+    if inter_x_min < inter_x_max and inter_y_min < inter_y_max:
+        # Determine alignment of each box
+        width1, height1 = x_max1 - x_min1, y_max1 - y_min1
+        width2, height2 = x_max2 - x_min2, y_max2 - y_min2
+
         # Calculate the center of the intersection box
         center_x = (inter_x_min + inter_x_max) / 2
         center_y = (inter_y_min + inter_y_max) / 2
         return (center_x, center_y)
 
+    # No intersection or boxes are in the same direction
+    return None
+
+def find_intersection_slope(box1, box2,sloped_walls_pos,sloped_walls_neg):
+    """
+    Find the center point of the intersection of two bounding boxes only if they are aligned
+    in different directions (one in x-direction, the other in y-direction).
+
+    Args:
+        box1 (tuple): First bounding box [x_min, y_min, x_max, y_max].
+        box2 (tuple): Second bounding box [x_min, y_min, x_max, y_max].
+
+    Returns:
+        tuple: Center point of the intersection if conditions are met, otherwise None.
+    """
+    x_min1, y_min1, x_max1, y_max1 = box1
+    x_min2, y_min2, x_max2, y_max2 = box2
+
+    # Calculate the coordinates of the intersection box
+    inter_x_min = max(x_min1, x_min2)
+    inter_y_min = max(y_min1, y_min2)
+    inter_x_max = min(x_max1, x_max2)
+    inter_y_max = min(y_max1, y_max2)
+
+    # Check if there is a valid intersection
+    if inter_x_min < inter_x_max and inter_y_min < inter_y_max:
+        # Determine alignment of each box
+        width1, height1 = x_max1 - x_min1, y_max1 - y_min1
+        width2, height2 = x_max2 - x_min2, y_max2 - y_min2
+
+        # Calculate the center of the intersection box
+        center_x = (inter_x_min + inter_x_max) / 2
+        center_y = (inter_y_min + inter_y_max) / 2
+        intersection_center = (center_x, center_y)
+        if box1 in sloped_walls_neg and box2 in sloped_walls_pos:
+            top_left = (x_min1, y_max1)
+            bottom_right = (x_max1, y_min1)
+            d1 = calculate_distance(intersection_center, top_left)
+            d2 = calculate_distance(intersection_center, bottom_right)
+            if d1 < d2:
+                return top_left
+            else:
+                return bottom_right
+        elif box1 in sloped_walls_pos and box2 in sloped_walls_neg:
+            top_right = (x_max1, y_max1)
+            bottom_left = (x_min1, y_min1)
+            d1 = calculate_distance(intersection_center, top_right)
+            d2 = calculate_distance(intersection_center, bottom_left)
+            if d1 < d2:
+                return top_right
+            else:
+                return bottom_left
+        else:
+            return None
+    return None
+def find_non_intersecting_end(box1, box2):
+    """
+    Find the coordinates of the non-intersecting end of the shorter bounding box.
+
+    Args:
+        box1 (tuple): First bounding box [x_min, y_min, x_max, y_max].
+        box2 (tuple): Second bounding box [x_min, y_min, x_max, y_max].
+
+    Returns:
+        tuple: Coordinates of the non-intersecting end of the shorter bounding box, or None if no intersection.
+    """
+    x_min1, y_min1, x_max1, y_max1 = box1
+    x_min2, y_min2, x_max2, y_max2 = box2
+
+    # Calculate the coordinates of the intersection box
+    inter_x_min = max(x_min1, x_min2)
+    inter_y_min = max(y_min1, y_min2)
+    inter_x_max = min(x_max1, x_max2)
+    inter_y_max = min(y_max1, y_max2)
+
+    # Check if there is a valid intersection
+    if inter_x_min < inter_x_max and inter_y_min < inter_y_max:
+        # Calculate dimensions of the boxes
+        width1, height1 = x_max1 - x_min1, y_max1 - y_min1
+        width2, height2 = x_max2 - x_min2, y_max2 - y_min2
+
+        # Determine the shorter box
+        if width1 * height1 < width2 * height2:  # Box 1 is shorter
+            shorter_box = box1
+            other_box = box2
+        else:  # Box 2 is shorter
+            shorter_box = box2
+            other_box = box1
+
+        # Determine the non-intersecting end of the shorter box
+        if shorter_box == box1:
+            if x_min1 < inter_x_min:  # Left side of box1 is non-intersecting
+                return (x_min1, (y_min1 + y_max1) / 2)
+            elif x_max1 > inter_x_max:  # Right side of box1 is non-intersecting
+                return (x_max1, (y_min1 + y_max1) / 2)
+            elif y_min1 < inter_y_min:  # Top side of box1 is non-intersecting
+                return ((x_min1 + x_max1) / 2, y_min1)
+            elif y_max1 > inter_y_max:  # Bottom side of box1 is non-intersecting
+                return ((x_min1 + x_max1) / 2, y_max1)
+        else:
+            if x_min2 < inter_x_min:  # Left side of box2 is non-intersecting
+                return (x_min2, (y_min2 + y_max2) / 2)
+            elif x_max2 > inter_x_max:  # Right side of box2 is non-intersecting
+                return (x_max2, (y_min2 + y_max2) / 2)
+            elif y_min2 < inter_y_min:  # Top side of box2 is non-intersecting
+                return ((x_min2 + x_max2) / 2, y_min2)
+            elif y_max2 > inter_y_max:  # Bottom side of box2 is non-intersecting
+                return ((x_min2 + x_max2) / 2, y_max2)
+
     # No intersection
     return None
+
 
 def calculate_wall_length(box):
         """
@@ -182,8 +352,48 @@ def calculate_wall_length(box):
         """
         x_min, y_min, x_max, y_max = box
         return math.sqrt((x_max - x_min) ** 2 + (y_max - y_min) ** 2)
+def identify_wall_types(results, image):
+    corner_curves = []
+    sloped_walls_pos = []
+    sloped_walls_neg = []
+    straight_walls = []
+    image = np.array(image)
+    for result in results:
+        boxes = result.boxes.xyxy
+        for box in boxes:
+            x1, y1, x2, y2 = map(int, box)
+            cropped_wall = image[y1:y2, x1:x2]
+            gray = cv2.cvtColor(cropped_wall, cv2.COLOR_BGR2GRAY)
+            _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                wall_type = "None"
+                if area > 50:
+                    if len(contour) >= 5:
+                        ellipse = cv2.fitEllipse(contour)
+                        (x, y), (major_axis, minor_axis), angle = ellipse
+                        if major_axis == 0 or minor_axis == 0:
+                            continue
+                        axis_ratio = minor_axis / major_axis if major_axis > minor_axis else major_axis / minor_axis
+                        if 0.7 < axis_ratio < 1.0:
+                            wall_type = "Curved Wall"
+                            corner_curves.append((x1, y1, x2, y2))
+                    if wall_type == "None":
+                        [vx, vy, x, y] = cv2.fitLine(contour, cv2.DIST_L2, 0, 0.01, 0.01)
+                        slope = vy / vx if vx != 0 else float('inf')
+                        if abs(slope) > 0.1 and abs(slope) < 10:
+                            wall_type = "Sloped Wall"
+                            if slope > 0:
+                                sloped_walls_pos.append((x1, y1, x2, y2))
+                            else:
+                                sloped_walls_neg.append((x1, y1, x2, y2))
+                        else:
+                            wall_type = "Straight Wall"
+                            # straight_walls.append((x1, y1, x2, y2))
+    return corner_curves, sloped_walls_pos, sloped_walls_neg, straight_walls
 
-def detect_wall_intersections(results):
+def detect_wall_intersections(results,image):
     """
     Detect intersections between walls and extract obstructions (e.g., doors, windows) using YOLO predictions.
 
@@ -196,7 +406,7 @@ def detect_wall_intersections(results):
     # Initialize wall detections and obstruction detections
     wall_class_id = 0
     wall_detections = []
-
+    corner_curves, sloped_walls_pos, sloped_walls_neg, straight_walls = identify_wall_types(results, image)
     # Iterate over detected boxes
     for box in results[0].boxes:
         xyxy = box.xyxy[0].cpu().numpy()  # Coordinates (x_min, y_min, x_max, y_max)
@@ -205,7 +415,7 @@ def detect_wall_intersections(results):
 
         # Filter detections for walls
         if class_id == wall_class_id:
-            x_min, y_min, x_max, y_max = xyxy
+            x_min, y_min, x_max, y_max = map(int, xyxy) 
             wall_detections.append((x_min, y_min, x_max, y_max))
 
     # Initialize output
@@ -215,10 +425,18 @@ def detect_wall_intersections(results):
 
     for i in range(num_boxes):
         box1 = wall_detections[i]
-
         for j in range(i + 1, num_boxes):
             box2 = wall_detections[j]
-            intersection_center = find_intersection_center(box1, box2)
+            # if (box1 in corner_curves) or (box2 in corner_curves):
+            #     intersection_center = find_intersection_curve(box1, box2)
+            if ((box1 in sloped_walls_pos) or (box1 in sloped_walls_neg)) and ((box2 in sloped_walls_pos) or (box2 in sloped_walls_neg)):
+                intersection_center = find_intersection_slope(box1,box2,sloped_walls_pos,sloped_walls_neg)
+            elif (box1 in sloped_walls_pos or box1 in sloped_walls_neg) or (box2 in sloped_walls_pos or box2 in sloped_walls_neg):
+                intersection_center = find_intersection_curve(box1,box2)
+            elif (box1 in corner_curves) or (box2 in corner_curves):
+                intersection_center = find_intersection_curve(box1, box2)
+            else:
+                intersection_center = find_intersection_center(box1, box2)
             if intersection_center:
                 wall_intersections.append(intersection_center)
 
@@ -262,13 +480,14 @@ def detect_window_intersections(results):
             box2 = window_detections[j]
             intersection_center = find_intersection_center(box1, box2)
             if intersection_center:
-                window_intersections.append(intersection_center)
+                non_intersecting_end = find_non_intersecting_end(box1, box2)
+                window_intersections.append(non_intersecting_end)
 
     # Return the list of intersection centers
     return window_intersections
 
 
-def place_columns_with_conditions(intersections):
+def place_columns_with_conditions(intersections, win_intersections):
     """
     Place columns at intersections and along walls based on the original wall length after scaling,
     ensuring the distance between columns is within specified bounds and avoiding obstructions.
@@ -283,6 +502,8 @@ def place_columns_with_conditions(intersections):
 
     # Add columns at wall intersections
     for intersection in intersections:
+        columns.append(intersection)
+    for intersection in win_intersections:
         columns.append(intersection)
 
     return columns
@@ -395,45 +616,25 @@ def convert_pdf_to_image(pdf_uploaded_file):
             raise Exception("Failed to download converted file from ConvertAPI.")
     else:
         raise Exception(f"ConvertAPI request failed with status code {response.status_code}: {response.text}")
-def merge_images(segmented_images, original_width, original_height):
+def merge_images(images, original_width, original_height):
     """
-    Merges segmented images back into the original image.
-
-    Args:
-        segmented_images (list): List of segmented Image objects.
-        original_width (int): Width of the original image.
-        original_height (int): Height of the original image.
-
-    Returns:
-        Merged Image object.
+    Merge segmented images into a single image and return the offsets of each image in the merged image.
     """
-    # Create a blank canvas for the original image
     merged_image = Image.new("RGB", (original_width, original_height))
+    offsets = []  # Store the offsets for each image in the merged image
 
-    if len(segmented_images) == 4:  # 2x2 grid
-        mid_width = original_width // 2
-        mid_height = original_height // 2
+    current_x, current_y = 0, 0
+    for img in images:
+        merged_image.paste(img, (current_x, current_y))
+        offsets.append((current_x, current_y))  # Track the offset of each image
+        current_x += img.width  # Update current_x for next image (adjust logic as per layout)
 
-        # Paste the images into the respective quadrants
-        merged_image.paste(segmented_images[0], (0, 0))  # Top-left
-        merged_image.paste(segmented_images[1], (mid_width, 0))  # Top-right
-        merged_image.paste(segmented_images[2], (0, mid_height))  # Bottom-left
-        merged_image.paste(segmented_images[3], (mid_width, mid_height))  # Bottom-right
+        # If the next image doesn't fit horizontally, move to the next row
+        if current_x >= original_width:
+            current_x = 0
+            current_y += img.height
 
-    elif len(segmented_images) == 2:  # Split into halves
-        if original_width >= original_height:  # Vertical split
-            mid_width = original_width // 2
-            merged_image.paste(segmented_images[0], (0, 0))  # Left half
-            merged_image.paste(segmented_images[1], (mid_width, 0))  # Right half
-        else:  # Horizontal split
-            mid_height = original_height // 2
-            merged_image.paste(segmented_images[0], (0, 0))  # Top half
-            merged_image.paste(segmented_images[1], (0, mid_height))  # Bottom half
-
-    elif len(segmented_images) == 1:  # Single image (no segmentation)
-        merged_image = segmented_images[0]
-
-    return merged_image
+    return merged_image, offsets
 def segment_image(image_path):
     """
     Segments an image into four equal parts and returns them as Image objects.
@@ -499,7 +700,7 @@ wall_type = st.selectbox(
     ("Hashed Walls", "Plain Walls")
 )
 
-weights = "hashed_wall.pt" if wall_type == "Hashed Walls" else "latest walls.pt"
+weights = "hashed_wall.pt" if wall_type == "Hashed Walls" else "wall with corner curve.pt"
 model_wall = YOLO(weights)
 
 st.title("Image & CAD File Upload with YOLO Annotation")
@@ -599,12 +800,13 @@ if uploaded_file is not None:
         class_colors = {0: (0, 0, 255), 1: (0, 255, 0)}  # Assign unique colors for each class
         class_colors_wall = {0: (255,0,0)}
         annotated_images = []
+        original_img, offsets = merge_images(segmented_images, original_width, original_height)
+        all_column_positions = []
         for i, img in enumerate(segmented_images, 1):
             # Annotate image for wall results
             results_wall = model_wall(img)
             combined_wall_results.append(results_wall)
-            intersections = detect_wall_intersections(results_wall)
-            columns = place_columns_with_conditions(intersections)
+            intersections = detect_wall_intersections(results_wall, img)
 
             # Create a copy of the original image for wall annotation
             annotated_frame_wall = np.array(img)
@@ -620,8 +822,14 @@ if uploaded_file is not None:
             # Annotate image for door/window results on the same frame
             results_dw = model_door_win(img)
             combined_dw_results.append(results_dw)
-            intersections_win = detect_window_intersections(results_dw)
-
+            win_intersections = detect_window_intersections(results_dw)
+            columns = place_columns_with_conditions(intersections, win_intersections)
+            for col in columns:
+                col_x, col_y = col  # Column position in segmented image
+                offset_x, offset_y = offsets[i - 1]  # Get the offset for this segmented image
+                absolute_x = col_x + offset_x
+                absolute_y = col_y + offset_y
+                all_column_positions.append((absolute_x, absolute_y)) 
             for box, conf, cls in zip(results_dw[0].boxes.xyxy, results_dw[0].boxes.conf, results_dw[0].boxes.cls):
                 x1, y1, x2, y2 = map(int, box)  # Extract box coordinates
                 label = f"{class_labels[int(cls)]} {conf:.2f}"  # Label for door/window class
@@ -639,12 +847,15 @@ if uploaded_file is not None:
             st.image(annotated_frame_wall, caption=f"Annotated Image {i}", use_container_width=True)
             annotated_frame_2 = plot_columns_on_annotated_frame(annotated_frame_wall, columns)
             # st.image(annotated_frame_2, caption="Image with wall intersections", use_container_width=True)
-            annotated_frame_3 = plot_window_intersections(annotated_frame_wall, intersections_win)
+            annotated_frame_3 = plot_window_intersections(annotated_frame_wall, win_intersections)
             annotated_image_pil = Image.fromarray(annotated_frame_wall)
             annotated_images.append(annotated_image_pil)
             # st.image(annotated_frame_3, caption="Image with window intersections", use_container_width=True)
-        merged_image = merge_images(annotated_images, original_width, original_height)
+        merged_image,off = merge_images(annotated_images, original_width, original_height)
         st.image(merged_image, caption="Combined Images", use_container_width=True)
+        original_image_np = np.array(original_image)
+        original_img_col = plot_columns_on_annotated_frame(original_image_np, all_column_positions)
+        st.image(original_img_col, caption="Combined Images", use_container_width=True)
         # annotated_frame = results[0].plot()  # YOLO annotates the frame
         # annotated_frame_2 = plot_columns_on_annotated_frame(img_bgr, columns)
         # Display the annotated image
