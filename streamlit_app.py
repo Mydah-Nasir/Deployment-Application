@@ -9,6 +9,13 @@ from PIL import Image
 import requests
 import math
 import io
+import pytesseract
+import re
+import statistics
+
+# For Windows, set the Tesseract executable path manually
+# pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
 
 # Load the YOLO model
 model = YOLO("best (6).pt")  # Replace with your custom-trained YOLO model
@@ -17,7 +24,7 @@ model_wall = YOLO("latest walls.pt")
 
 # Conversion factors to millimeters based on DXF units
 
-def get_max_dimension_from_dxf(uploaded_file):
+def get_conversion_unit_from_dxf(uploaded_file):
     """
     Extract the maximum dimension from a DXF file uploaded as a file-like object and convert it to millimeters.
 
@@ -29,16 +36,33 @@ def get_max_dimension_from_dxf(uploaded_file):
     """
     # Conversion factors for DXF units to millimeters
     CONVERSION_FACTORS = {
-        0: 1.0,  # Unitless (default to 1.0)
-        1: 25.4,  # Inches to mm
-        2: 10.0,  # Feet to mm
-        3: 304.8,  # Yards to mm
-        4: 1000.0,  # Miles to mm
-        5: 1.0,  # Millimeters
-        6: 10.0,  # Centimeters to mm
-        7: 1000.0,  # Meters to mm
-        8: 1e6,  # Kilometers to mm
-    }
+    0: 1.0,          # Unitless
+    1: 25.4,         # Inches (units.IN) to mm
+    2: 304.8,        # Feet (units.FT) to mm
+    3: 1609344.0,    # Miles (units.MI) to mm
+    4: 1.0,          # Millimeters (units.MM)
+    5: 10.0,         # Centimeters (units.CM) to mm
+    6: 1000.0,       # Meters (units.M) to mm
+    7: 1e6,          # Kilometers (units.KM) to mm
+    8: 0.0254,       # Microinches to mm
+    9: 0.0254,       # Mils to mm
+    10: 914.4,       # Yards (units.YD) to mm
+    11: 1e-7,        # Angstroms to mm
+    12: 1e-6,        # Nanometers to mm
+    13: 0.001,       # Microns to mm
+    14: 100.0,       # Decimeters (units.DM) to mm
+    15: 10000.0,     # Decameters to mm
+    16: 100000.0,    # Hectometers to mm
+    17: 1e9,         # Gigameters to mm
+    18: 1.496e14,    # Astronomical units to mm
+    19: 9.461e18,    # Light years to mm
+    20: 3.086e19,    # Parsecs to mm
+    21: 304.8006,    # US Survey Feet to mm
+    22: 25.40005,    # US Survey Inch to mm
+    23: 914.4018288, # US Survey Yard to mm
+    24: 1609344.0,   # US Survey Mile to mm
+}
+
 
     # Ensure file is not None
     if uploaded_file is None:
@@ -59,43 +83,13 @@ def get_max_dimension_from_dxf(uploaded_file):
 
     # Get the units from the DXF file
     insunits = doc.header.get('$INSUNITS', 0)  # Default to 0 (no units)
+    print(insunits)
     conversion_factor = CONVERSION_FACTORS.get(insunits, 1.0)  # Default to 1.0 if units are unknown
-
-    # Initialize variables to track the maximum dimension
-    max_dimension = 0
-
-    # Iterate through all DIMENSION entities
-    for dimension in msp.query("DIMENSION"):
-        # Explicitly defined dimension text
-        dim_text = dimension.dxf.text
-        dim_value = None
-
-        if not dim_text:
-            # If no explicit text, calculate the dimension value
-            try:
-                dim_value = dimension.get_measurement()
-            except ezdxf.DXFStructureError as e:
-                print(f"Warning: {e}")
-        else:
-            try:
-                # Convert explicit dimension text to a float (if possible)
-                dim_value = float(dim_text)
-            except ValueError:
-                print(f"Warning: Unable to convert dimension text '{dim_text}' to a float.")
-
-        if dim_value is not None:
-            # Update the maximum dimension if the current one is larger
-            if dim_value > max_dimension:
-                max_dimension = dim_value
-
-    # Convert the maximum dimension to millimeters
-    max_dimension_mm = max_dimension * conversion_factor
-
-    return max_dimension_mm
+    return conversion_factor
 
 
 
-def calculate_dimension_bounding_box_length(results, dimension_class_id):
+def calculate_scale_factor_dxf(results, conversion_factor, image_path):
     """
     Calculate the length of each dimension bounding box and return the longest one.
 
@@ -106,42 +100,110 @@ def calculate_dimension_bounding_box_length(results, dimension_class_id):
     Returns:
         dict: The longest dimension bounding box and its length.
     """
-    longest_bbox = None
-    max_length = 0
+    detections = results[0].boxes.xyxy.cpu().numpy()  # Bounding box coordinates (x_min, y_min, x_max, y_max)
+    class_ids = results[0].boxes.cls.cpu().numpy()
+    confidences = results[0].boxes.conf.cpu().numpy()  # Confidence scores
+    image = cv2.imread(image_path)
 
-    # Iterate over detected bounding boxes
-    for box in results[0].boxes:
-        xyxy = box.xyxy[0].cpu().numpy()  # Bounding box coordinates [x_min, y_min, x_max, y_max]
-        conf = box.conf[0].cpu().numpy()  # Confidence score
-        class_id = int(box.cls[0].cpu().numpy())  # Class ID
+    # Filter bounding boxes with class_id 0 (Dimensions)
+    dimension_boxes = [box for box, class_id in zip(detections, class_ids) if class_id == 0]
 
-        # Process only the dimension class
-        if class_id != dimension_class_id:
-            continue  # Skip non-dimension classes
+    # Resize scale factor (400% increase as per your requirement)
+    resize_scale = 5
 
-        # Extract bounding box coordinates
-        x_min, y_min, x_max, y_max = xyxy
+    # Extract text and integers from each bounding box
+    extracted_texts = []
+    extracted_integers = []
+    scales = []  # Array to store pixel-to-meter scales
 
-        # Calculate the width and height of the bounding box
-        width = x_max - x_min
-        height = y_max - y_min
+    for box in dimension_boxes:
+        x_min, y_min, x_max, y_max = map(int, box[:4])
+        cropped = image[y_min:y_max, x_min:x_max]  # Crop the bounding box
+        pixel_width = x_max - x_min
+        pixel_height = y_max - y_min
+        length = max(pixel_width, pixel_height)
 
-        # For dimensions, the length is the larger of width or height
-        length = max(width, height)
+        # Resize the cropped image
+        h, w = cropped.shape[:2]
+        resized_cropped = cv2.resize(cropped, (w * resize_scale, h * resize_scale), interpolation=cv2.INTER_LINEAR)
 
-        # Update the longest bounding box if the current one is larger
-        if length > max_length:
-            max_length = length
-            longest_bbox = {
-                "class_id": class_id,
-                "confidence": conf,
-                "bounding_box": [x_min, y_min, x_max, y_max],
-                "length": length
-            }
+        # Convert resized image to grayscale (optional, for better OCR accuracy)
+        resized_cropped_gray = cv2.cvtColor(resized_cropped, cv2.COLOR_BGR2GRAY)
 
-    return longest_bbox
-import math
+        # Extract text with Tesseract
+        text = pytesseract.image_to_string(resized_cropped_gray, config='--psm 6')  # Use Tesseract OCR
+        extracted_texts.append(text.strip())  # Append cleaned text
 
+        # Extract integers from the text using regex
+        integers = re.findall(r'\d+', text)  # Find all sequences of digits
+        integers = list(map(int, integers))  # Convert to integers
+        extracted_integers.append(integers)
+        print(integers)
+        # Calculate pixel-to-meter scale if there is exactly one integer
+        if len(integers) == 1:
+            dimension = integers[0]*conversion_factor
+            if dimension > 0:
+                scale = length / dimension  # Pixels per meter
+                scales.append(scale)
+    median_scale = statistics.median(scales)
+    return median_scale
+def find_scale_factor(results, image_path, unit):
+    conversion_factors = {
+        "mm": 1,          # 1 mm = 1 mm
+        "cm": 10,         # 1 cm = 10 mm
+        "m": 1000,        # 1 m = 1000 mm
+        "feet": 304.8,    # 1 foot = 304.8 mm
+        "inches": 25.4    # 1 inch = 25.4 mm
+    }
+    conversion_factor =  conversion_factors.get(unit.lower(), None)
+    # Get bounding boxes
+    detections = results[0].boxes.xyxy.cpu().numpy()  # Bounding box coordinates (x_min, y_min, x_max, y_max)
+    class_ids = results[0].boxes.cls.cpu().numpy()
+    confidences = results[0].boxes.conf.cpu().numpy()  # Confidence scores
+    image = cv2.imread(image_path)
+
+    # Filter bounding boxes with class_id 0 (Dimensions)
+    dimension_boxes = [box for box, class_id in zip(detections, class_ids) if class_id == 0]
+
+    # Resize scale factor (400% increase as per your requirement)
+    resize_scale = 5
+
+    # Extract text and integers from each bounding box
+    extracted_texts = []
+    extracted_integers = []
+    scales = []  # Array to store pixel-to-meter scales
+
+    for box in dimension_boxes:
+        x_min, y_min, x_max, y_max = map(int, box[:4])
+        cropped = image[y_min:y_max, x_min:x_max]  # Crop the bounding box
+        pixel_width = x_max - x_min
+        pixel_height = y_max - y_min
+        length = max(pixel_width, pixel_height)
+
+        # Resize the cropped image
+        h, w = cropped.shape[:2]
+        resized_cropped = cv2.resize(cropped, (w * resize_scale, h * resize_scale), interpolation=cv2.INTER_LINEAR)
+
+        # Convert resized image to grayscale (optional, for better OCR accuracy)
+        resized_cropped_gray = cv2.cvtColor(resized_cropped, cv2.COLOR_BGR2GRAY)
+
+        # Extract text with Tesseract
+        text = pytesseract.image_to_string(resized_cropped_gray, config='--psm 6')  # Use Tesseract OCR
+        extracted_texts.append(text.strip())  # Append cleaned text
+
+        # Extract integers from the text using regex
+        integers = re.findall(r'\d+', text)  # Find all sequences of digits
+        integers = list(map(int, integers))  # Convert to integers
+        extracted_integers.append(integers)
+        print(integers)
+        # Calculate pixel-to-meter scale if there is exactly one integer
+        if len(integers) == 1:
+            dimension = integers[0]*conversion_factor
+            if dimension > 0:
+                scale = length / dimension  # Pixels per meter
+                scales.append(scale)
+    median_scale = statistics.median(scales)
+    return median_scale
 def calculate_distance(coord1, coord2):
     """
     Calculate the Euclidean distance between two coordinates in 2D space.
@@ -339,7 +401,42 @@ def find_non_intersecting_end(box1, box2):
     # No intersection
     return None
 
+def get_intersection_type(box1, box2):
+    """
+    Determine the type of intersection (corner or T-section) between two bounding boxes.
 
+    Args:
+        box1 (tuple): Bounding box 1 (x_min, y_min, x_max, y_max).
+        box2 (tuple): Bounding box 2 (x_min, y_min, x_max, y_max).
+
+    Returns:
+        str: "corner", "T-section", or None if there is no intersection.
+    """
+    x_min1, y_min1, x_max1, y_max1 = box1
+    x_min2, y_min2, x_max2, y_max2 = box2
+
+    # Calculate the intersection coordinates
+    inter_x_min = max(x_min1, x_min2)
+    inter_y_min = max(y_min1, y_min2)
+    inter_x_max = min(x_max1, x_max2)
+    inter_y_max = min(y_max1, y_max2)
+
+    # Check if there's a valid intersection
+    if inter_x_min < inter_x_max and inter_y_min < inter_y_max:
+        # Intersection dimensions
+        inter_width = inter_x_max - inter_x_min
+        inter_height = inter_y_max - inter_y_min
+
+        # Check for corner intersection
+        if (inter_width == x_max1 - x_min1 or inter_width == x_max2 - x_min2) and \
+           (inter_height == y_max1 - y_min1 or inter_height == y_max2 - y_min2):
+            return "corner"
+        # Check for T-section intersection
+        if (inter_width < x_max1 - x_min1 and inter_height == y_max1 - y_min1) or \
+           (inter_height < y_max1 - y_min1 and inter_width == x_max1 - x_min1):
+            return "T-section"
+    # No intersection
+    return None
 def calculate_wall_length(box):
         """
         Calculate the real-world length of a wall given its bounding box.
@@ -369,7 +466,7 @@ def identify_wall_types(results, image):
             for contour in contours:
                 area = cv2.contourArea(contour)
                 wall_type = "None"
-                if area > 50:
+                if area > 300:
                     if len(contour) >= 5:
                         ellipse = cv2.fitEllipse(contour)
                         (x, y), (major_axis, minor_axis), angle = ellipse
@@ -432,7 +529,7 @@ def detect_wall_intersections(results,image):
             if ((box1 in sloped_walls_pos) or (box1 in sloped_walls_neg)) and ((box2 in sloped_walls_pos) or (box2 in sloped_walls_neg)):
                 intersection_center = find_intersection_slope(box1,box2,sloped_walls_pos,sloped_walls_neg)
             elif (box1 in sloped_walls_pos or box1 in sloped_walls_neg) or (box2 in sloped_walls_pos or box2 in sloped_walls_neg):
-                intersection_center = find_intersection_curve(box1,box2)
+                intersection_center = find_intersection_center(box1,box2)
             elif (box1 in corner_curves) or (box2 in corner_curves):
                 intersection_center = find_intersection_curve(box1, box2)
             else:
@@ -485,6 +582,36 @@ def detect_window_intersections(results):
 
     # Return the list of intersection centers
     return window_intersections
+def calculate_door_window_bounding_boxes_for_segment(results_dw, offset):
+    """
+    Calculates the bounding boxes for doors and windows in the original image 
+    for a specific segment based on detection results and its offset.
+
+    Args:
+        results_dw (object): Detection results from `model_door_win` for a single segmented image.
+                             Contains bounding boxes, confidence scores, and classes.
+        offset (tuple): Offset (offset_x, offset_y) for the segmented image.
+
+    Returns:
+        list: List of adjusted bounding boxes in the original image coordinates.
+    """
+    bounding_boxes = []
+    offset_x, offset_y = offset  # Unpack the offset tuple
+
+    # Extract bounding boxes from results_dw
+    for box, conf, cls in zip(results_dw[0].boxes.xyxy, results_dw[0].boxes.conf, results_dw[0].boxes.cls):
+        x1, y1, x2, y2 = map(int, box)  # Extract box coordinates as integers
+
+        # Adjust bounding box coordinates using the offset
+        absolute_x1 = x1 + offset_x
+        absolute_y1 = y1 + offset_y
+        absolute_x2 = x2 + offset_x
+        absolute_y2 = y2 + offset_y
+
+        # Append adjusted bounding box to the result
+        bounding_boxes.append((absolute_x1, absolute_y1, absolute_x2, absolute_y2))
+
+    return bounding_boxes
 
 
 def place_columns_with_conditions(intersections, win_intersections):
@@ -505,6 +632,228 @@ def place_columns_with_conditions(intersections, win_intersections):
         columns.append(intersection)
     for intersection in win_intersections:
         columns.append(intersection)
+
+    return columns
+def calculate_average_column_distance(all_column_positions, scale_factor):
+    """
+    Calculate the average distance between consecutive columns.
+
+    Args:
+        all_column_positions (list): A list of column positions [(x1, y1), (x2, y2), ...].
+
+    Returns:
+        float: The average distance between consecutive columns, or None if not enough positions.
+    """
+    if len(all_column_positions) < 2:
+        # Not enough columns to calculate distances
+        return None
+
+    distances = []
+    num_distances = len(all_column_positions) - 1
+    for i in range(num_distances):
+        x1, y1 = all_column_positions[i]
+        x2, y2 = all_column_positions[i + 1]
+        distance = ((x2 - x1)**2 + (y2 - y1)**2)**0.5/ scale_factor # Euclidean distance
+        if 3000 < distance < 7000:
+            distances.append(distance)
+    if len(distances) > 0:
+        average_dist = sum(distances)/len(distances)
+    else:
+        average_dist = 5000
+
+    return average_dist
+def remove_columns_with_scale(all_column_positions, scale_factor):
+    """
+    Place columns at intersections and along walls based on the original wall length after scaling,
+    ensuring the distance between columns is within specified bounds and avoiding obstructions.
+
+    Args:
+        all_column_positions (list): List of intersection center points (x, y).
+        scale_factor (float): Pixels per millimeter.
+
+    Returns:
+        list: List of column coordinates (x, y) to place on the image.
+    """
+    columns = []
+    distances = []
+
+    # Sort intersections by their x-coordinate, then by y-coordinate
+    all_column_positions.sort(key=lambda point: (point[0], point[1]))
+    # Iterate through intersections and filter based on distance
+    for i in range(len(all_column_positions)):
+        keep_column = True
+        for j in range(i):
+            x1, y1 = all_column_positions[i]
+            x2, y2 = all_column_positions[j]
+
+            # Calculate actual distance in millimeters
+            distance = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5 / scale_factor
+
+            if distance < 2000:
+                # If the distance is less than 2000 mm, remove the column with the higher y-coordinate
+                if y1 < y2:
+                    keep_column = False
+                else:
+                    # Remove the previously added column
+                    if all_column_positions[j] in columns:
+                        columns.remove(all_column_positions[j])
+        if keep_column:
+            columns.append(all_column_positions[i])
+
+    return columns
+def adjust_columns_near_doors_windows(columns, doors_wins_bbox):
+    """
+    Adjust the positions of columns based on the bounding boxes of doors and windows.
+
+    If a column lies within a bounding box, it is moved to either the start (top/left)
+    or the end (bottom/right) of the bounding box.
+
+    Args:
+        columns (list): List of column coordinates (x, y).
+        doors_wins_bbox (list): List of bounding boxes [(x1, y1, x2, y2)] for doors and windows.
+
+    Returns:
+        list: Updated list of column coordinates (x, y).
+    """
+    adjusted_columns = []
+
+    for col_x, col_y in columns:
+        adjusted = False
+
+        for x1, y1, x2, y2 in doors_wins_bbox:
+            # Check if the column lies within the bounding box
+            if x1 <= col_x <= x2 and y1 <= col_y <= y2:
+                # Move column to the start or end of the bounding box
+                if abs(x2-x1) > abs(y2 - y1):
+                    col_y = y2 + 15
+                else:
+                    col_x = x2 + 15
+                # if abs(col_x - x1) <= abs(col_x - x2):
+                #     col_x = x1  # Move to the start (left)
+                # else:
+                #     col_x = x2  # Move to the end (right)
+
+                # if abs(col_y - y1) <= abs(col_y - y2):
+                #     col_y = y1  # Move to the start (top)
+                # else:
+                #     col_y = y2  # Move to the end (bottom)
+
+                adjusted = True
+                # break  # Column adjusted; move to the next column
+
+        if not adjusted:
+            # Keep the column unchanged if it doesn't lie in any bounding box
+            adjusted_columns.append((col_x, col_y))
+        else:
+            # Add the adjusted column
+            adjusted_columns.append((col_x, col_y))
+
+    return adjusted_columns
+
+def filter_columns_by_walls(walls_bbox, columns):
+    """
+    Filters columns to ensure they only remain if they lie within any wall's bounding box.
+
+    Args:
+        walls_bbox (list): List of bounding boxes [(x1, y1, x2, y2)] representing walls.
+        columns (list): List of column coordinates [(x, y)].
+
+    Returns:
+        list: Filtered list of column coordinates [(x, y)].
+    """
+    filtered_columns = []
+
+    for col_x, col_y in columns:
+        in_wall = False  # Flag to check if column is within any wall
+
+        # Check if the column lies within any wall's bounding box
+        for x1, y1, x2, y2 in walls_bbox:
+            if x1 <= col_x <= x2 and y1 <= col_y <= y2:
+                in_wall = True
+                break  # No need to check further; column lies in a wall
+
+        # If the column is within a wall, keep it
+        if in_wall:
+            filtered_columns.append((col_x, col_y))
+
+    return filtered_columns
+
+
+def place_columns_with_scale(all_column_positions, scale_factor):
+    """
+    Place columns at intersections and along walls based on the original wall length after scaling,
+    ensuring the distance between columns is within specified bounds and adding intermediate columns if necessary.
+
+    Args:
+        all_column_positions (list): List of intersection center points (x, y).
+        scale_factor (float): Pixels per millimeter.
+
+    Returns:
+        list: List of column coordinates (x, y) to place on the image.
+    """
+    columns = []
+    all_column_positions.sort(key=lambda point: (point[0], point[1]))  # Sort for easier processing
+    average_dist = calculate_average_column_distance(all_column_positions, scale_factor)
+
+    margin = 5  # Allowable margin for alignment
+
+    # Iterate through each column position
+    for i, (x1, y1) in enumerate(all_column_positions):
+        keep_column = True
+        nearest_vertical = None
+        nearest_horizontal = None
+        min_vert_dist = float("inf")
+        min_horiz_dist = float("inf")
+
+        # Find the nearest vertical and horizontal neighbors
+        for j, (x2, y2) in enumerate(all_column_positions):
+            if i == j:
+                continue
+
+            # Check for vertical alignment with margin
+            if abs(x1 - x2) <= margin:  # Allow small difference for vertical alignment
+                dist = abs(y2 - y1)
+                if dist < min_vert_dist:
+                    min_vert_dist = dist
+                    nearest_vertical = (x2, y2)
+
+            # Check for horizontal alignment with margin
+            if abs(y1 - y2) <= margin:  # Allow small difference for horizontal alignment
+                dist = abs(x2 - x1)
+                if dist < min_horiz_dist:
+                    min_horiz_dist = dist
+                    nearest_horizontal = (x2, y2)
+
+        # If vertical distance is greater than threshold and nearest vertical found, place intermediate columns
+        if nearest_vertical:
+            dist_mm = min_vert_dist / scale_factor
+            if dist_mm > 7000:
+                num_columns = int(dist_mm / average_dist)
+                for k in range(1, num_columns):
+                    new_y = y1 + (nearest_vertical[1] - y1) * (k / num_columns)
+                    new_column = (x1, new_y)
+                    if new_column not in columns:
+                        columns.append(new_column)
+
+        # If horizontal distance is greater than threshold and nearest horizontal found, place intermediate columns
+        if nearest_horizontal:
+            dist_mm = min_horiz_dist / scale_factor
+            if dist_mm > 7000:
+                num_columns = int(dist_mm / average_dist)
+                for k in range(1, num_columns):
+                    new_x = x1 + (nearest_horizontal[0] - x1) * (k / num_columns)
+                    new_column = (new_x, y1)
+                    if new_column not in columns:
+                        columns.append(new_column)
+
+        # Check if the column itself should be kept
+        for existing_col in columns:
+            if abs(existing_col[0] - x1) <= margin and abs(existing_col[1] - y1) <= margin:
+                keep_column = False
+                break
+
+        if keep_column:
+            columns.append((x1, y1))
 
     return columns
 
@@ -616,6 +965,43 @@ def convert_pdf_to_image(pdf_uploaded_file):
             raise Exception("Failed to download converted file from ConvertAPI.")
     else:
         raise Exception(f"ConvertAPI request failed with status code {response.status_code}: {response.text}")
+
+def convert_dwg_to_image(dwg_uploaded_file):
+    """
+    Convert a DWG file to an image using ConvertAPI.
+
+    Args:
+        dwg_uploaded_file: A file-like object representing the uploaded DWG file.
+
+    Returns:
+        PIL.Image object of the first page of the converted DWG file.
+    """
+    api_key = "secret_178fvDmZ6YFbSaKl"  # Replace with your ConvertAPI key
+
+    # Upload the DWG file to convertapi.com
+    payload = {'StoreFile': 'true'}
+    response = requests.post(
+        f"https://v2.convertapi.com/convert/dwg/to/png?Secret={api_key}",
+        data=payload,
+        files={"file": (dwg_uploaded_file.name, dwg_uploaded_file)}
+    )
+
+    if response.status_code == 200:
+        # Parse the result
+        result = response.json()
+
+        # Get the URL of the first converted PNG file
+        converted_file_url = result['Files'][0]['Url']
+
+        # Download the converted PNG file
+        converted_file_response = requests.get(converted_file_url)
+        if converted_file_response.status_code == 200:
+            # Load the downloaded PNG as a PIL image
+            return Image.open(io.BytesIO(converted_file_response.content))
+        else:
+            raise Exception("Failed to download converted file from ConvertAPI.")
+    else:
+        raise Exception(f"ConvertAPI request failed with status code {response.status_code}: {response.text}")
 def merge_images(images, original_width, original_height):
     """
     Merge segmented images into a single image and return the offsets of each image in the merged image.
@@ -700,12 +1086,15 @@ wall_type = st.selectbox(
     ("Hashed Walls", "Plain Walls")
 )
 
-weights = "hashed_wall.pt" if wall_type == "Hashed Walls" else "wall with corner curve.pt"
+weights = "hashed_walls_improved.pt" if wall_type == "Hashed Walls" else "wall with corner curve.pt"
 model_wall = YOLO(weights)
 
 st.title("Image & CAD File Upload with YOLO Annotation")
 st.write("Upload an image or DWG/DXF file, and the YOLO model will process it.")
-
+unit = st.selectbox(
+    "Select a unit:",
+    ["mm", "cm", "m", "feet", "inches"]  # Options in the dropdown
+    )
 # File uploader
 uploaded_file = st.file_uploader("Choose a file (Image, PDF or DWG/DXF)...", type=["jpg", "png", "jpeg","pdf","dwg", "dxf"])
 
@@ -718,7 +1107,7 @@ if uploaded_file is not None:
 
     # Define save path
     save_path = os.path.join(save_dir, uploaded_file.name)
-
+    max_dimension = 0
     # Save the file
     with open(save_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
@@ -732,7 +1121,7 @@ if uploaded_file is not None:
         img_array = np.array(image)
         img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
     
-    elif file_type in ["pdf", "dxf"]:
+    elif file_type in ["pdf"]:
         # Convert DWG/DXF to image using ConvertAPI
         # Extract the base name without extension
         uploaded_file_name = uploaded_file.name
@@ -754,12 +1143,35 @@ if uploaded_file is not None:
         except Exception as e:
             st.error(f"Error converting DXF/DWG to image: {e}")
             img_bgr = None
-    elif file_type in ["dwg", "dxf"]:
+    elif file_type in ["dxf"]:
         # Convert DWG/DXF to image using ConvertAPI
         try: 
             image = convert_dxf_to_image(uploaded_file)
-            max_dimension = get_max_dimension_from_dxf(save_path)
+            conversion_factor = get_conversion_unit_from_dxf(save_path)
+            image.save(save_path, format="PNG")
             st.image(image, caption="Converted DXF/DWG to Image", use_container_width=True)
+
+            # Convert PIL Image to OpenCV format
+            img_array = np.array(image)
+            img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        except Exception as e:
+            st.error(f"Error converting DXF/DWG to image: {e}")
+            img_bgr = None
+    elif file_type in ["dwg"]:
+        # Convert DWG/DXF to image using ConvertAPI
+        # Extract the base name without extension
+        uploaded_file_name = uploaded_file.name
+        base_name = os.path.splitext(uploaded_file_name)[0]
+
+        # Ensure the save directory exists
+        os.makedirs(save_dir, exist_ok=True)
+
+        # Define save path with a PNG extension
+        save_path = os.path.join(save_dir, f"{base_name}.png")
+        try: 
+            image = convert_dwg_to_image(uploaded_file)
+            image.save(save_path, format="PNG")
+            st.image(image, caption="Converted PDF to Image", use_container_width=True)
 
             # Convert PIL Image to OpenCV format
             img_array = np.array(image)
@@ -776,9 +1188,19 @@ if uploaded_file is not None:
         segmented_images = segment_image(save_path)
         original_image = Image.open(save_path)
         original_width, original_height = original_image.size
+        img_dim = img_bgr.copy()
+        results_dim = model(img_dim)
+        print(file_type)
+        if file_type in ["jpg", "png", "jpeg", "pdf"]:
+            scale_factor = find_scale_factor(results_dim, save_path, unit)
+        elif file_type in ["dxf"]:
+            scale_factor = calculate_scale_factor_dxf(results_dim, conversion_factor, save_path)
+        else:
+            scale_factor = 0.05
+        print(scale_factor)
+        if scale_factor > 0.1:
+            scale_factor = 0.05
         # results = model(img_bgr)
-        # dimension_class_id = 0  # Replace with your dimension class ID
-        # longest_dimension_bbox = calculate_dimension_bounding_box_length(results, dimension_class_id)
         # wall_class_id = 2  # Replace with your wall class ID
         # obstruction_class_ids = [1, 3]  # Replace with your obstruction class IDs
         # wall_intersections, wall_lengths, wall_coordinates, obstructions = detect_wall_intersections_and_obstructions(
@@ -792,7 +1214,7 @@ if uploaded_file is not None:
         # Now you can pass these results to the column placement function
         # columns = place_columns_with_conditions(wall_intersections,wall_lengths,wall_coordinates, scale_factor, obstructions)
         # Annotate the image
-        st.write("### Segmented Images")
+        st.write("### Annotated Images")
         combined_wall_results = []
         combined_dw_results = []
         class_labels = {0: "Door", 1: "Window"}  # Replace class IDs with labels
@@ -802,12 +1224,13 @@ if uploaded_file is not None:
         annotated_images = []
         original_img, offsets = merge_images(segmented_images, original_width, original_height)
         all_column_positions = []
+        all_doors_win = []
+        all_walls = []
         for i, img in enumerate(segmented_images, 1):
             # Annotate image for wall results
             results_wall = model_wall(img)
             combined_wall_results.append(results_wall)
             intersections = detect_wall_intersections(results_wall, img)
-
             # Create a copy of the original image for wall annotation
             annotated_frame_wall = np.array(img)
 
@@ -823,6 +1246,10 @@ if uploaded_file is not None:
             results_dw = model_door_win(img)
             combined_dw_results.append(results_dw)
             win_intersections = detect_window_intersections(results_dw)
+            doors_wins_bboxs = calculate_door_window_bounding_boxes_for_segment(results_dw, offsets[i -1])
+            walls_bboxs = calculate_door_window_bounding_boxes_for_segment(results_wall, offsets[i -1])
+            all_doors_win.extend(doors_wins_bboxs)
+            all_walls.extend(walls_bboxs)
             columns = place_columns_with_conditions(intersections, win_intersections)
             for col in columns:
                 col_x, col_y = col  # Column position in segmented image
@@ -846,16 +1273,22 @@ if uploaded_file is not None:
             # Display combined annotation for wall and door/window
             st.image(annotated_frame_wall, caption=f"Annotated Image {i}", use_container_width=True)
             annotated_frame_2 = plot_columns_on_annotated_frame(annotated_frame_wall, columns)
-            # st.image(annotated_frame_2, caption="Image with wall intersections", use_container_width=True)
+            st.image(annotated_frame_2, caption="Image with wall intersections", use_container_width=True)
             annotated_frame_3 = plot_window_intersections(annotated_frame_wall, win_intersections)
             annotated_image_pil = Image.fromarray(annotated_frame_wall)
             annotated_images.append(annotated_image_pil)
             # st.image(annotated_frame_3, caption="Image with window intersections", use_container_width=True)
         merged_image,off = merge_images(annotated_images, original_width, original_height)
-        st.image(merged_image, caption="Combined Images", use_container_width=True)
+        st.image(merged_image, caption="Annotated Images", use_container_width=True)
         original_image_np = np.array(original_image)
-        original_img_col = plot_columns_on_annotated_frame(original_image_np, all_column_positions)
-        st.image(original_img_col, caption="Combined Images", use_container_width=True)
+        updated_cols = remove_columns_with_scale(all_column_positions, scale_factor)
+        new_columns = place_columns_with_scale(updated_cols, scale_factor)
+        new_columns_adj = adjust_columns_near_doors_windows(new_columns, all_doors_win)
+        columns_walls = filter_columns_by_walls(all_walls, new_columns_adj)
+        final_cols = remove_columns_with_scale(columns_walls, scale_factor)
+        original_img_col = plot_columns_on_annotated_frame(original_image_np, final_cols)
+        st.write("### Image with columns")
+        st.image(original_img_col, caption="Image with columns", use_container_width=True)
         # annotated_frame = results[0].plot()  # YOLO annotates the frame
         # annotated_frame_2 = plot_columns_on_annotated_frame(img_bgr, columns)
         # Display the annotated image
