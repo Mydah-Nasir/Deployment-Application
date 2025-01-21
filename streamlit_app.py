@@ -14,7 +14,7 @@ import re
 import statistics
 
 # For Windows, set the Tesseract executable path manually
-# pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 
 # Load the YOLO model
@@ -492,7 +492,6 @@ def identify_wall_types(results, image):
                             wall_type = "Straight Wall"
                             # straight_walls.append((x1, y1, x2, y2))
     return corner_curves, sloped_walls_pos, sloped_walls_neg, straight_walls
-
 def detect_wall_intersections(results,image):
     """
     Detect intersections between walls and extract obstructions (e.g., doors, windows) using YOLO predictions.
@@ -539,7 +538,6 @@ def detect_wall_intersections(results,image):
                 intersection_center = find_intersection_center(box1, box2)
             if intersection_center:
                 wall_intersections.append(intersection_center)
-
     # Return the list of intersection centers
     return wall_intersections
 
@@ -1164,7 +1162,7 @@ wall_type = st.selectbox(
     ("Hashed Walls", "Plain Walls")
 )
 
-weights = "hashed_walls_improved.pt" if wall_type == "Hashed Walls" else "wall with corner curve.pt"
+weights = "hashed_walls_improved.pt" if wall_type == "Hashed Walls" else "best (10).pt"
 model_wall = YOLO(weights)
 
 st.title("Image/PDF/CAD File Upload")
@@ -1220,6 +1218,14 @@ if uploaded_file is not None:
         except Exception as e:
             st.error(f"Error converting DXF/DWG to image: {e}")
             img_bgr = None
+        finally:
+                # Remove the uploaded file
+                file_path = os.path.join(save_dir, uploaded_file.name)
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    print(f"Uploaded file '{uploaded_file.name}' has been removed.")
+                else:
+                    print(f"Uploaded file '{uploaded_file.name}' does not exist.")
     elif file_type in ["dxf"]:
         # Convert DWG/DXF to image using ConvertAPI
         try: 
@@ -1256,6 +1262,14 @@ if uploaded_file is not None:
         except Exception as e:
             st.error(f"Error converting DXF/DWG to image: {e}")
             img_bgr = None
+        finally:
+            # Remove the uploaded file
+            file_path = os.path.join(save_dir, uploaded_file.name)
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"Uploaded file '{uploaded_file.name}' has been removed.")
+            else:
+                print(f"Uploaded file '{uploaded_file.name}' does not exist.")
     else:
         st.error("Unsupported file type!")
         img_bgr = None
@@ -1377,6 +1391,11 @@ if uploaded_file is not None:
         original_img_col = plot_columns_on_annotated_frame(original_image_np, final_cols)
         st.write("### Image with columns")
         st.image(original_img_col, caption="Image with columns", use_container_width=True)
+        if os.path.exists(save_path):
+            os.remove(save_path)
+            print(f"File at {save_path} has been removed.")
+        else:
+            print(f"File at {save_path} does not exist.")
         # annotated_frame = results[0].plot()  # YOLO annotates the frame
         # annotated_frame_2 = plot_columns_on_annotated_frame(img_bgr, columns)
         # Display the annotated image
