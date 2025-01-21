@@ -145,7 +145,10 @@ def calculate_scale_factor_dxf(results, conversion_factor, image_path):
             if dimension > 0:
                 scale = length / dimension  # Pixels per meter
                 scales.append(scale)
-    median_scale = statistics.median(scales)
+    if len(scales) > 0:
+        median_scale = statistics.median(scales)
+    else:
+        median_scale = 0.05
     return median_scale
 def find_scale_factor(results, image_path, unit):
     conversion_factors = {
@@ -242,7 +245,7 @@ def find_intersection_center(box1, box2):
     inter_y_max = min(y_max1, y_max2)
 
     # Check if there is a valid intersection
-    if inter_x_min < inter_x_max and inter_y_min < inter_y_max:
+    if inter_x_min <= inter_x_max and inter_y_min <= inter_y_max:
         # Determine alignment of each box
         width1, height1 = x_max1 - x_min1, y_max1 - y_min1
         width2, height2 = x_max2 - x_min2, y_max2 - y_min2
@@ -529,7 +532,7 @@ def detect_wall_intersections(results,image):
             if ((box1 in sloped_walls_pos) or (box1 in sloped_walls_neg)) and ((box2 in sloped_walls_pos) or (box2 in sloped_walls_neg)):
                 intersection_center = find_intersection_slope(box1,box2,sloped_walls_pos,sloped_walls_neg)
             elif (box1 in sloped_walls_pos or box1 in sloped_walls_neg) or (box2 in sloped_walls_pos or box2 in sloped_walls_neg):
-                intersection_center = find_intersection_center(box1,box2)
+                intersection_center = find_intersection_curve(box1,box2)
             elif (box1 in corner_curves) or (box2 in corner_curves):
                 intersection_center = find_intersection_curve(box1, box2)
             else:
@@ -583,6 +586,42 @@ def detect_window_intersections(results):
     # Return the list of intersection centers
     return window_intersections
 def calculate_door_window_bounding_boxes_for_segment(results_dw, offset):
+    """
+    Calculates the bounding boxes for doors and windows in the original image 
+    for a specific segment based on detection results and its offset.
+
+    Args:
+        results_dw (object): Detection results from `model_door_win` for a single segmented image.
+                             Contains bounding boxes, confidence scores, and classes.
+        offset (tuple): Offset (offset_x, offset_y) for the segmented image.
+
+    Returns:
+        tuple: Two lists of adjusted bounding boxes for windows and doors in the original image coordinates.
+    """
+    windows_bounding_boxes = []
+    doors_bounding_boxes = []
+    offset_x, offset_y = offset  # Unpack the offset tuple
+
+    # Extract bounding boxes from results_dw
+    for box, conf, cls in zip(results_dw[0].boxes.xyxy, results_dw[0].boxes.conf, results_dw[0].boxes.cls):
+        x1, y1, x2, y2 = map(int, box)  # Extract box coordinates as integers
+
+        # Adjust bounding box coordinates using the offset
+        absolute_x1 = x1 + offset_x
+        absolute_y1 = y1 + offset_y
+        absolute_x2 = x2 + offset_x
+        absolute_y2 = y2 + offset_y
+
+        # Determine the class (e.g., 0 for windows, 1 for doors)
+        if cls == 1:  # Assuming class 0 is for windows
+            windows_bounding_boxes.append((absolute_x1, absolute_y1, absolute_x2, absolute_y2))
+        elif cls == 0:  # Assuming class 1 is for doors
+            doors_bounding_boxes.append((absolute_x1, absolute_y1, absolute_x2, absolute_y2))
+
+    return windows_bounding_boxes, doors_bounding_boxes
+
+
+def calculate_wall_bounding_boxes_for_segment(results_dw, offset):
     """
     Calculates the bounding boxes for doors and windows in the original image 
     for a specific segment based on detection results and its offset.
@@ -701,7 +740,7 @@ def remove_columns_with_scale(all_column_positions, scale_factor):
             columns.append(all_column_positions[i])
 
     return columns
-def adjust_columns_near_doors_windows(columns, doors_wins_bbox):
+def adjust_columns_near_doors_windows(columns_with_dimensions, doors_bbox, windows_bbox):
     """
     Adjust the positions of columns based on the bounding boxes of doors and windows.
 
@@ -709,62 +748,62 @@ def adjust_columns_near_doors_windows(columns, doors_wins_bbox):
     or the end (bottom/right) of the bounding box.
 
     Args:
-        columns (list): List of column coordinates (x, y).
-        doors_wins_bbox (list): List of bounding boxes [(x1, y1, x2, y2)] for doors and windows.
+        columns_with_dimensions (list): List of column data [(x, y, width, length)].
+        doors_bbox (list): List of bounding boxes [(x1, y1, x2, y2)] for doors.
+        windows_bbox (list): List of bounding boxes [(x1, y1, x2, y2)] for windows.
 
     Returns:
-        list: Updated list of column coordinates (x, y).
+        list: Updated list of column data [(x, y, width, length)].
     """
     adjusted_columns = []
 
-    for col_x, col_y in columns:
+    for col_x, col_y, width, length in columns_with_dimensions:
         adjusted = False
 
-        for x1, y1, x2, y2 in doors_wins_bbox:
-            # Check if the column lies within the bounding box
+        # Check for adjustment near doors
+        for x1, y1, x2, y2 in doors_bbox:
             if x1 <= col_x <= x2 and y1 <= col_y <= y2:
-                # Move column to the start or end of the bounding box
-                if abs(x2-x1) > abs(y2 - y1):
-                    col_y = y2 + 15
+                # Adjust based on the door bounding box
+                if abs(x2 - x1) > abs(y2 - y1):
+                    col_y = y2 + 15  # Adjust vertically
                 else:
-                    col_x = x2 + 15
-                # if abs(col_x - x1) <= abs(col_x - x2):
-                #     col_x = x1  # Move to the start (left)
-                # else:
-                #     col_x = x2  # Move to the end (right)
-
-                # if abs(col_y - y1) <= abs(col_y - y2):
-                #     col_y = y1  # Move to the start (top)
-                # else:
-                #     col_y = y2  # Move to the end (bottom)
-
+                    col_x = x2 + 15  # Adjust horizontally
                 adjusted = True
-                # break  # Column adjusted; move to the next column
+                # break
 
+        # Check for adjustment near windows if not already adjusted
         if not adjusted:
-            # Keep the column unchanged if it doesn't lie in any bounding box
-            adjusted_columns.append((col_x, col_y))
-        else:
-            # Add the adjusted column
-            adjusted_columns.append((col_x, col_y))
+            for x1, y1, x2, y2 in windows_bbox:
+                if x1 <= col_x <= x2 and y1 <= col_y <= y2:
+                    # Adjust based on the window bounding box
+                    if abs(x2 - x1) > abs(y2 - y1):
+                        col_x = x2 + 15  # Adjust vertically (opposite direction)
+                    else:
+                        col_y = y2 + 15  # Adjust horizontally (opposite direction)
+                    adjusted = True
+                    # break
+
+        # Append adjusted or original column data
+        adjusted_columns.append((col_x, col_y, width, length))
 
     return adjusted_columns
 
-def filter_columns_by_walls(walls_bbox, columns):
+
+def filter_columns_by_walls(walls_bbox, columns_with_dimensions):
     """
     Filters columns to ensure they only remain if they lie within any wall's bounding box.
 
     Args:
         walls_bbox (list): List of bounding boxes [(x1, y1, x2, y2)] representing walls.
-        columns (list): List of column coordinates [(x, y)].
+        columns_with_dimensions (list): List of column data [(x, y, width, length)].
 
     Returns:
-        list: Filtered list of column coordinates [(x, y)].
+        list: Filtered list of column data [(x, y, width, length)].
     """
     filtered_columns = []
-    margin = 10
+    margin = 20
 
-    for col_x, col_y in columns:
+    for col_x, col_y, width, length in columns_with_dimensions:
         in_wall = False  # Flag to check if column is within any wall
 
         # Check if the column lies within any wall's bounding box
@@ -775,7 +814,7 @@ def filter_columns_by_walls(walls_bbox, columns):
 
         # If the column is within a wall, keep it
         if in_wall:
-            filtered_columns.append((col_x, col_y))
+            filtered_columns.append((col_x, col_y, width, length))
 
     return filtered_columns
 
@@ -790,7 +829,7 @@ def place_columns_with_scale(all_column_positions, scale_factor):
         scale_factor (float): Pixels per millimeter.
 
     Returns:
-        list: List of column coordinates (x, y) to place on the image.
+        list: List of tuples containing column coordinates (x, y), width, and length.
     """
     columns = []
     all_column_positions.sort(key=lambda point: (point[0], point[1]))  # Sort for easier processing
@@ -805,6 +844,7 @@ def place_columns_with_scale(all_column_positions, scale_factor):
         nearest_horizontal = None
         min_vert_dist = float("inf")
         min_horiz_dist = float("inf")
+        width = 300*scale_factor
 
         # Find the nearest vertical and horizontal neighbors
         for j, (x2, y2) in enumerate(all_column_positions):
@@ -830,22 +870,28 @@ def place_columns_with_scale(all_column_positions, scale_factor):
             dist_mm = min_vert_dist / scale_factor
             if dist_mm > 7000:
                 num_columns = int(dist_mm / average_dist)
+                actual_spacing = dist_mm / num_columns
                 for k in range(1, num_columns):
                     new_y = y1 + (nearest_vertical[1] - y1) * (k / num_columns)
                     new_column = (x1, new_y)
-                    if new_column not in columns:
-                        columns.append(new_column)
+                    if new_column not in [col[:2] for col in columns]:
+                        actual_length = actual_spacing / 20
+                        length = actual_length*scale_factor
+                        columns.append((x1, new_y, width, length))  # Add width and length
 
         # If horizontal distance is greater than threshold and nearest horizontal found, place intermediate columns
         if nearest_horizontal:
             dist_mm = min_horiz_dist / scale_factor
             if dist_mm > 7000:
                 num_columns = int(dist_mm / average_dist)
+                actual_spacing = dist_mm / num_columns
                 for k in range(1, num_columns):
                     new_x = x1 + (nearest_horizontal[0] - x1) * (k / num_columns)
                     new_column = (new_x, y1)
-                    if new_column not in columns:
-                        columns.append(new_column)
+                    if new_column not in [col[:2] for col in columns]:
+                        actual_length = actual_spacing / 20
+                        length = actual_length*scale_factor
+                        columns.append((new_x, y1, length, width))  # Add width and length
 
         # Check if the column itself should be kept
         for existing_col in columns:
@@ -854,9 +900,10 @@ def place_columns_with_scale(all_column_positions, scale_factor):
                 break
 
         if keep_column:
-            columns.append((x1, y1))
+            columns.append((x1, y1, width, average_dist*scale_factor / 20))  # Add width and length for the original column
 
     return columns
+
 
 
 def plot_columns_on_annotated_frame(annotated_frame, columns):
@@ -880,6 +927,36 @@ def plot_columns_on_annotated_frame(annotated_frame, columns):
         cv2.circle(annotated_frame, (x, y), radius=15, color=(255, 0, 0), thickness=-1) 
     # Return the updated frame
     return annotated_frame
+
+def plot_columns_with_dimensions_on_frame(annotated_frame, columns_with_dimensions):
+    """
+    Plot rectangles for columns with dimensions onto the annotated frame and return the updated frame.
+
+    Args:
+        annotated_frame (numpy.ndarray): Annotated frame generated from `results[0].plot()`.
+        columns_with_dimensions (list): List of columns with dimensions [(x, y, width, length)].
+
+    Returns:
+        numpy.ndarray: The updated annotated frame with rectangles plotted.
+    """
+    # Ensure the frame is valid
+    if annotated_frame is None:
+        raise ValueError("Error: Annotated frame is not valid.")
+
+    # Plot each column as a rectangle
+    for column in columns_with_dimensions:
+        x, y, width, length = column
+        x1 = int(x - width / 2)  # Top-left x-coordinate
+        y1 = int(y - length / 2)  # Top-left y-coordinate
+        x2 = int(x + width / 2)  # Bottom-right x-coordinate
+        y2 = int(y + length / 2)  # Bottom-right y-coordinate
+
+        # Draw the rectangle
+        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color=(255, 0, 0), thickness=5)
+
+    # Return the updated frame
+    return annotated_frame
+
 
 def plot_window_intersections(annotated_frame, intersections):
     """
@@ -1224,7 +1301,8 @@ if uploaded_file is not None:
         annotated_images = []
         original_img, offsets = merge_images(segmented_images, original_width, original_height)
         all_column_positions = []
-        all_doors_win = []
+        all_doors = []
+        all_wins = []
         all_walls = []
         for i, img in enumerate(segmented_images, 1):
             # Annotate image for wall results
@@ -1246,9 +1324,10 @@ if uploaded_file is not None:
             results_dw = model_door_win(img)
             combined_dw_results.append(results_dw)
             win_intersections = detect_window_intersections(results_dw)
-            doors_wins_bboxs = calculate_door_window_bounding_boxes_for_segment(results_dw, offsets[i -1])
-            walls_bboxs = calculate_door_window_bounding_boxes_for_segment(results_wall, offsets[i -1])
-            all_doors_win.extend(doors_wins_bboxs)
+            wins_bboxs, doors_bboxs = calculate_door_window_bounding_boxes_for_segment(results_dw, offsets[i -1])
+            walls_bboxs = calculate_wall_bounding_boxes_for_segment(results_wall, offsets[i -1])
+            all_doors.extend(doors_bboxs)
+            all_wins.extend(wins_bboxs)
             all_walls.extend(walls_bboxs)
             columns = place_columns_with_conditions(intersections, win_intersections)
             for col in columns:
@@ -1272,7 +1351,7 @@ if uploaded_file is not None:
 
             # Display combined annotation for wall and door/window
             # st.image(annotated_frame_wall, caption=f"Annotated Image {i}", use_container_width=True)
-            # annotated_frame_2 = plot_columns_on_annotated_frame(annotated_frame_wall, columns)
+            annotated_frame_2 = plot_columns_on_annotated_frame(annotated_frame_wall, columns)
             # st.image(annotated_frame_2, caption="Image with wall intersections", use_container_width=True)
             annotated_frame_3 = plot_window_intersections(annotated_frame_wall, win_intersections)
             annotated_image_pil = Image.fromarray(annotated_frame_wall)
@@ -1282,10 +1361,19 @@ if uploaded_file is not None:
         st.image(merged_image, caption="Annotated Images", use_container_width=True)
         original_image_np = np.array(original_image)
         updated_cols = remove_columns_with_scale(all_column_positions, scale_factor)
-        new_columns = place_columns_with_scale(updated_cols, scale_factor)
-        new_columns_adj = adjust_columns_near_doors_windows(new_columns, all_doors_win)
+        columns_with_dimension = place_columns_with_scale(updated_cols, scale_factor) 
+        new_columns_adj = adjust_columns_near_doors_windows(columns_with_dimension, all_doors, all_wins)
         columns_walls = filter_columns_by_walls(all_walls, new_columns_adj)
-        final_cols = remove_columns_with_scale(columns_walls, scale_factor)
+        new_columns = []
+        for column in columns_walls:
+            x, y = column[0], column[1]  # Extract x, y coordinates
+            new_columns.append((x, y))
+        final_cols = remove_columns_with_scale(new_columns, scale_factor)
+        final_cols_set = set(final_cols)
+        filtered_columns = [
+        column for column in columns_walls if (column[0], column[1]) in final_cols_set
+        ]
+        #original_img_col = plot_columns_with_dimensions_on_frame(original_image_np, filtered_columns)
         original_img_col = plot_columns_on_annotated_frame(original_image_np, final_cols)
         st.write("### Image with columns")
         st.image(original_img_col, caption="Image with columns", use_container_width=True)
