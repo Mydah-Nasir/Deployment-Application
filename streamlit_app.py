@@ -1078,7 +1078,7 @@ def segment_image(image_path):
 
 # Streamlit UI
 # Streamlit app title
-st.title("YOLOv8 Weight Selector")
+st.title("Select Wall Type")
 
 # Dropdown for selecting wall type
 wall_type = st.selectbox(
@@ -1089,10 +1089,9 @@ wall_type = st.selectbox(
 weights = "hashed_walls_improved.pt" if wall_type == "Hashed Walls" else "wall with corner curve.pt"
 model_wall = YOLO(weights)
 
-st.title("Image & CAD File Upload with YOLO Annotation")
-st.write("Upload an image or DWG/DXF file, and the YOLO model will process it.")
+st.title("Image/PDF/CAD File Upload")
 unit = st.selectbox(
-    "Select a unit:",
+    "Select a unit for image, pdf or dwg:",
     ["mm", "cm", "m", "feet", "inches"]  # Options in the dropdown
     )
 # File uploader
@@ -1271,9 +1270,9 @@ if uploaded_file is not None:
                 # cv2.putText(annotated_frame_wall, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
 
             # Display combined annotation for wall and door/window
-            st.image(annotated_frame_wall, caption=f"Annotated Image {i}", use_container_width=True)
-            annotated_frame_2 = plot_columns_on_annotated_frame(annotated_frame_wall, columns)
-            st.image(annotated_frame_2, caption="Image with wall intersections", use_container_width=True)
+            # st.image(annotated_frame_wall, caption=f"Annotated Image {i}", use_container_width=True)
+            # annotated_frame_2 = plot_columns_on_annotated_frame(annotated_frame_wall, columns)
+            # st.image(annotated_frame_2, caption="Image with wall intersections", use_container_width=True)
             annotated_frame_3 = plot_window_intersections(annotated_frame_wall, win_intersections)
             annotated_image_pil = Image.fromarray(annotated_frame_wall)
             annotated_images.append(annotated_image_pil)
