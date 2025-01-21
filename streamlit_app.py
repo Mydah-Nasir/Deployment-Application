@@ -762,13 +762,14 @@ def filter_columns_by_walls(walls_bbox, columns):
         list: Filtered list of column coordinates [(x, y)].
     """
     filtered_columns = []
+    margin = 10
 
     for col_x, col_y in columns:
         in_wall = False  # Flag to check if column is within any wall
 
         # Check if the column lies within any wall's bounding box
         for x1, y1, x2, y2 in walls_bbox:
-            if x1 <= col_x <= x2 and y1 <= col_y <= y2:
+            if (x1 - margin) <= col_x <= (x2 + margin) and (y1 - margin) <= col_y <= (y2 + margin):
                 in_wall = True
                 break  # No need to check further; column lies in a wall
 
