@@ -701,7 +701,7 @@ def calculate_average_column_distance(all_column_positions, scale_factor):
         average_dist = 5000
 
     return average_dist
-def remove_columns_with_scale(all_column_positions, scale_factor):
+def remove_columns_with_scale(all_column_positions, scale_factor, threshold):
     """
     Place columns at intersections and along walls based on the original wall length after scaling,
     ensuring the distance between columns is within specified bounds and avoiding obstructions.
@@ -728,7 +728,7 @@ def remove_columns_with_scale(all_column_positions, scale_factor):
             # Calculate actual distance in millimeters
             distance = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5 / scale_factor
 
-            if distance < 2000:
+            if distance < threshold:
                 # If the distance is less than 2000 mm, remove the column with the higher y-coordinate
                 if y1 < y2:
                     keep_column = False
@@ -1360,7 +1360,7 @@ if uploaded_file is not None:
         merged_image,off = merge_images(annotated_images, original_width, original_height)
         st.image(merged_image, caption="Annotated Images", use_container_width=True)
         original_image_np = np.array(original_image)
-        updated_cols = remove_columns_with_scale(all_column_positions, scale_factor)
+        updated_cols = remove_columns_with_scale(all_column_positions, scale_factor, 50)
         columns_with_dimension = place_columns_with_scale(updated_cols, scale_factor) 
         new_columns_adj = adjust_columns_near_doors_windows(columns_with_dimension, all_doors, all_wins)
         columns_walls = filter_columns_by_walls(all_walls, new_columns_adj)
@@ -1368,7 +1368,7 @@ if uploaded_file is not None:
         for column in columns_walls:
             x, y = column[0], column[1]  # Extract x, y coordinates
             new_columns.append((x, y))
-        final_cols = remove_columns_with_scale(new_columns, scale_factor)
+        final_cols = remove_columns_with_scale(new_columns, scale_factor, 2000)
         final_cols_set = set(final_cols)
         filtered_columns = [
         column for column in columns_walls if (column[0], column[1]) in final_cols_set
