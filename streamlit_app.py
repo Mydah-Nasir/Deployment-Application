@@ -205,7 +205,10 @@ def find_scale_factor(results, image_path, unit):
             if dimension > 0:
                 scale = length / dimension  # Pixels per meter
                 scales.append(scale)
-    median_scale = statistics.median(scales)
+    if len(scales) > 0:
+        median_scale = statistics.median(scales)
+    else:
+        median_scale = 0.05
     return median_scale
 def calculate_distance(coord1, coord2):
     """
@@ -282,7 +285,7 @@ def find_intersection_curve(box1, box2):
     inter_y_max = min(y_max1, y_max2)
 
     # Check if there is a valid intersection
-    if inter_x_min < inter_x_max and inter_y_min < inter_y_max:
+    if inter_x_min <= inter_x_max and inter_y_min <= inter_y_max:
         # Determine alignment of each box
         width1, height1 = x_max1 - x_min1, y_max1 - y_min1
         width2, height2 = x_max2 - x_min2, y_max2 - y_min2
@@ -317,7 +320,7 @@ def find_intersection_slope(box1, box2,sloped_walls_pos,sloped_walls_neg):
     inter_y_max = min(y_max1, y_max2)
 
     # Check if there is a valid intersection
-    if inter_x_min < inter_x_max and inter_y_min < inter_y_max:
+    if inter_x_min <= inter_x_max and inter_y_min <= inter_y_max:
         # Determine alignment of each box
         width1, height1 = x_max1 - x_min1, y_max1 - y_min1
         width2, height2 = x_max2 - x_min2, y_max2 - y_min2
@@ -345,7 +348,8 @@ def find_intersection_slope(box1, box2,sloped_walls_pos,sloped_walls_neg):
             else:
                 return bottom_left
         else:
-            return None
+            intersection_center = find_intersection_center(box1,box2)
+            return intersection_center
     return None
 def find_non_intersecting_end(box1, box2):
     """
