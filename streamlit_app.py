@@ -1166,7 +1166,7 @@ wall_type = st.selectbox(
     ("Hashed Walls", "Plain Walls")
 )
 
-weights = "hashed_walls_improved.pt" if wall_type == "Hashed Walls" else "best (10).pt"
+weights = "hashed_walls_improved.pt" if wall_type == "Hashed Walls" else "wall with corner curve.pt"
 model_wall = YOLO(weights)
 
 st.title("Image/PDF/CAD File Upload")
