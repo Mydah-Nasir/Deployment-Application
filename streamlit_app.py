@@ -14,7 +14,7 @@ import re
 import statistics
 
 # For Windows, set the Tesseract executable path manually
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+#pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 
 # Load the YOLO model
