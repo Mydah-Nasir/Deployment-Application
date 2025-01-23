@@ -803,7 +803,7 @@ def filter_columns_by_walls(walls_bbox, columns_with_dimensions):
         list: Filtered list of column data [(x, y, width, length)].
     """
     filtered_columns = []
-    margin = 20
+    margin = 50
 
     for col_x, col_y, width, length in columns_with_dimensions:
         in_wall = False  # Flag to check if column is within any wall
@@ -841,6 +841,7 @@ def place_columns_with_scale(all_column_positions, scale_factor):
 
     # Iterate through each column position
     for i, (x1, y1) in enumerate(all_column_positions):
+        print('i:', i,(x1, y1))
         keep_column = True
         nearest_vertical = None
         nearest_horizontal = None
@@ -1378,7 +1379,7 @@ if uploaded_file is not None:
         merged_image,off = merge_images(annotated_images, original_width, original_height)
         st.image(merged_image, caption="Annotated Images", use_container_width=True)
         original_image_np = np.array(original_image)
-        updated_cols = remove_columns_with_scale(all_column_positions, scale_factor, 50)
+        updated_cols = remove_columns_with_scale(all_column_positions, scale_factor, 200)
         columns_with_dimension = place_columns_with_scale(updated_cols, scale_factor) 
         new_columns_adj = adjust_columns_near_doors_windows(columns_with_dimension, all_doors, all_wins)
         columns_walls = filter_columns_by_walls(all_walls, new_columns_adj)
