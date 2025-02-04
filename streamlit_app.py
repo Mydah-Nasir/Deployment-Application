@@ -3,6 +3,8 @@ import cv2
 import numpy as np
 import ezdxf
 import tempfile
+import matplotlib.pyplot as plt
+from sklearn.linear_model import RANSACRegressor
 import os
 from ultralytics import YOLO
 from PIL import Image
@@ -408,42 +410,97 @@ def find_non_intersecting_end(box1, box2):
     # No intersection
     return None
 
-def get_intersection_type(box1, box2):
+def crop_around_intersection(box1, box2, image, crop_size=30):
     """
-    Determine the type of intersection (corner or T-section) between two bounding boxes.
+    Crop a 500x500 region centered around the intersection of two bounding boxes.
 
     Args:
-        box1 (tuple): Bounding box 1 (x_min, y_min, x_max, y_max).
-        box2 (tuple): Bounding box 2 (x_min, y_min, x_max, y_max).
+        box1 (tuple): First bounding box [x_min, y_min, x_max, y_max].
+        box2 (tuple): Second bounding box [x_min, y_min, x_max, y_max].
+        image (numpy array): The original image.
+        crop_size (int, optional): Size of the square crop. Defaults to 500.
 
     Returns:
-        str: "corner", "T-section", or None if there is no intersection.
+        numpy array or None: Cropped image if valid intersection exists, otherwise None.
     """
     x_min1, y_min1, x_max1, y_max1 = box1
     x_min2, y_min2, x_max2, y_max2 = box2
 
-    # Calculate the intersection coordinates
+    # Calculate intersection area coordinates
     inter_x_min = max(x_min1, x_min2)
     inter_y_min = max(y_min1, y_min2)
     inter_x_max = min(x_max1, x_max2)
     inter_y_max = min(y_max1, y_max2)
 
-    # Check if there's a valid intersection
+    # Check if there is a valid intersection
     if inter_x_min < inter_x_max and inter_y_min < inter_y_max:
-        # Intersection dimensions
-        inter_width = inter_x_max - inter_x_min
-        inter_height = inter_y_max - inter_y_min
+        # Compute center of intersection
+        center_x = (inter_x_min + inter_x_max) // 2
+        center_y = (inter_y_min + inter_y_max) // 2
 
-        # Check for corner intersection
-        if (inter_width == x_max1 - x_min1 or inter_width == x_max2 - x_min2) and \
-           (inter_height == y_max1 - y_min1 or inter_height == y_max2 - y_min2):
-            return "corner"
-        # Check for T-section intersection
-        if (inter_width < x_max1 - x_min1 and inter_height == y_max1 - y_min1) or \
-           (inter_height < y_max1 - y_min1 and inter_width == x_max1 - x_min1):
-            return "T-section"
-    # No intersection
+        # Define the cropping boundaries (ensure within image dimensions)
+        half_size = crop_size // 2
+        img_height, img_width = image.shape[:2]
+
+        crop_x_min = max(0, center_x - half_size)
+        crop_y_min = max(0, center_y - half_size)
+        crop_x_max = min(img_width, center_x + half_size)
+        crop_y_max = min(img_height, center_y + half_size)
+
+        # Crop the region centered around the intersection
+        cropped_image = image[crop_y_min:crop_y_max, crop_x_min:crop_x_max]
+        return cropped_image
+
+    # Return None if no valid intersection
     return None
+def detect_intersection_type(image):
+    """
+    Detects intersections in an image and classifies them as 'corner' or 'T-section'.
+    
+    Args:
+        image (numpy array): The input image.
+
+    Returns:
+        str: 'corner' if inlier_ratio > 0.9, 'T-section' otherwise.
+    """
+    # Convert to grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # Convert to 32-bit floating point
+    gray = np.float32(gray)
+
+    # Apply Harris Corner Detection
+    dst = cv2.cornerHarris(gray, 2, 5, 0.07)
+
+    # Dilate detected corners
+    dst = cv2.dilate(dst, None)
+
+    # Thresholding to get corner points
+    threshold = 0.01 * dst.max()
+    corner_points = np.argwhere(dst > threshold)
+
+    # Count corners detected
+    num_corners = len(corner_points)
+    
+    if num_corners < 2:
+        return "Not enough corners detected"
+
+    # Extract X, Y coordinates of detected corners
+    X = corner_points[:, 1].reshape(-1, 1)  # Column indices
+    Y = corner_points[:, 0]  # Row indices
+
+    # Fit a RANSAC model
+    ransac = RANSACRegressor()
+    ransac.fit(X, Y)
+
+    # Calculate the inliers (points that fit the line)
+    inlier_mask = ransac.inlier_mask_
+    inlier_ratio = np.sum(inlier_mask) / len(inlier_mask)
+
+    # Determine intersection type
+    intersection_type = "corner" if inlier_ratio > 0.9 else "T-section"
+
+    return intersection_type
 def calculate_wall_length(box):
         """
         Calculate the real-world length of a wall given its bounding box.
@@ -496,54 +553,83 @@ def identify_wall_types(results, image):
                             wall_type = "Straight Wall"
                             # straight_walls.append((x1, y1, x2, y2))
     return corner_curves, sloped_walls_pos, sloped_walls_neg, straight_walls
-def detect_wall_intersections(results,image):
+
+def detect_wall_intersections(results, image):
     """
     Detect intersections between walls and extract obstructions (e.g., doors, windows) using YOLO predictions.
 
     Args:
         results: Inference results from the YOLO model.
+        image: Input image.
 
     Returns:
-        list: List of center points of intersections between walls.
+        tuple: List of center points of intersections between walls, corners, and T-sections.
     """
-    # Initialize wall detections and obstruction detections
     wall_class_id = 0
     wall_detections = []
     corner_curves, sloped_walls_pos, sloped_walls_neg, straight_walls = identify_wall_types(results, image)
-    # Iterate over detected boxes
+    
     for box in results[0].boxes:
-        xyxy = box.xyxy[0].cpu().numpy()  # Coordinates (x_min, y_min, x_max, y_max)
-        conf = box.conf[0].cpu().numpy()  # Confidence score
-        class_id = int(box.cls[0].cpu().numpy())  # Class ID
-
-        # Filter detections for walls
+        xyxy = box.xyxy[0].cpu().numpy()
+        class_id = int(box.cls[0].cpu().numpy())
+        
         if class_id == wall_class_id:
-            x_min, y_min, x_max, y_max = map(int, xyxy) 
+            x_min, y_min, x_max, y_max = map(int, xyxy)
             wall_detections.append((x_min, y_min, x_max, y_max))
-
-    # Initialize output
+    
     wall_intersections = []
-
+    corners = []
+    t_sections = []
+    endpoints = []
+    img = np.array(image)
     num_boxes = len(wall_detections)
-
+    
     for i in range(num_boxes):
         box1 = wall_detections[i]
         for j in range(i + 1, num_boxes):
             box2 = wall_detections[j]
-            # if (box1 in corner_curves) or (box2 in corner_curves):
-            #     intersection_center = find_intersection_curve(box1, box2)
+            
             if ((box1 in sloped_walls_pos) or (box1 in sloped_walls_neg)) and ((box2 in sloped_walls_pos) or (box2 in sloped_walls_neg)):
-                intersection_center = find_intersection_slope(box1,box2,sloped_walls_pos,sloped_walls_neg)
+                intersection_center = find_intersection_slope(box1, box2, sloped_walls_pos, sloped_walls_neg)
             elif (box1 in sloped_walls_pos or box1 in sloped_walls_neg) or (box2 in sloped_walls_pos or box2 in sloped_walls_neg):
-                intersection_center = find_intersection_curve(box1,box2)
+                intersection_center = find_intersection_curve(box1, box2)
             elif (box1 in corner_curves) or (box2 in corner_curves):
                 intersection_center = find_intersection_curve(box1, box2)
             else:
                 intersection_center = find_intersection_center(box1, box2)
+            
             if intersection_center:
+                cropped_image = crop_around_intersection(box1, box2, img)
+                if cropped_image is not None:
+                    intersection_type = detect_intersection_type(cropped_image)
+                
                 wall_intersections.append(intersection_center)
-    # Return the list of intersection centers
-    return wall_intersections
+                if intersection_type == 'corner':
+                    corners.append(intersection_center)
+                elif intersection_type == 'T-section':
+                    t_sections.append(intersection_center)
+    
+    # Ensure wall endpoints are included
+    for wall in wall_detections:
+        x_min, y_min, x_max, y_max = wall
+        width, height = x_max - x_min, y_max - y_min
+        if width > height:
+            y_min = y_min + height/2
+            y_max = y_max - height/2
+            wall_endpoints = [(x_min, y_min), (x_max, y_max)]
+        else:
+            x_min = x_min + width/2
+            x_max = x_max - width/2
+            wall_endpoints = [(x_min, y_min), (x_max, y_max)]
+        
+        for endpoint in wall_endpoints:
+            if not any(np.linalg.norm(np.array(endpoint) - np.array(intersection)) < 50 for intersection in wall_intersections):
+                print('endpoint appended')
+                endpoints.append(endpoint)
+                wall_intersections.append(endpoint)
+    
+    return wall_intersections, corners, t_sections, endpoints
+
 
 def detect_window_intersections(results):
     """
@@ -742,6 +828,94 @@ def remove_columns_with_scale(all_column_positions, scale_factor, threshold):
             columns.append(all_column_positions[i])
 
     return columns
+def remove_endpoints_with_scale(all_column_positions, all_endpoints,scale_factor, threshold):
+    """
+    Place columns at intersections and along walls based on the original wall length after scaling,
+    ensuring the distance between columns is within specified bounds and avoiding obstructions.
+
+    Args:
+        all_column_positions (list): List of intersection center points (x, y).
+        scale_factor (float): Pixels per millimeter.
+
+    Returns:
+        list: List of column coordinates (x, y) to place on the image.
+    """
+    columns = []
+    distances = []
+
+    # Sort intersections by their x-coordinate, then by y-coordinate
+    all_column_positions.sort(key=lambda point: (point[0], point[1]))
+    # Iterate through intersections and filter based on distance
+    for i in range(len(all_column_positions)):
+        keep_column = True
+        for j in range(i):
+            x1, y1 = all_column_positions[i]
+            col1 = all_column_positions[i]
+            x2, y2 = all_column_positions[j]
+
+            # Calculate actual distance in millimeters
+            distance = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5 / scale_factor
+
+            if distance < threshold:
+                # If the distance is less than 2000 mm, remove the column with the higher y-coordinate
+                if col1 in all_endpoints:
+                    keep_column = False
+                else:
+                    # Remove the previously added column
+                    if all_column_positions[j] in columns:
+                        columns.remove(all_column_positions[j])
+        if keep_column:
+            columns.append(all_column_positions[i])
+
+    return columns
+
+def remove_columns_with_corners(all_column_positions, corners, t_sections,endpoints, scale_factor, threshold):
+    """
+    Place columns at intersections and along walls based on the original wall length after scaling,
+    ensuring the distance between columns is within specified bounds and avoiding obstructions.
+
+    Args:
+        all_column_positions (list): List of intersection center points (x, y).
+        scale_factor (float): Pixels per millimeter.
+
+    Returns:
+        list: List of column coordinates (x, y) to place on the image.
+    """
+    columns = []
+    distances = []
+    to_remove = set()
+
+
+    # Sort intersections by their x-coordinate, then by y-coordinate
+    all_column_positions.sort(key=lambda point: (point[0], -point[1]))
+    # Iterate through intersections and filter based on distance
+    for i in range(len(all_column_positions)):
+        if i in to_remove:  
+            continue  # Skip if already marked for removal
+        for j in range(i + 1, len(all_column_positions)):
+            if j in to_remove:
+                continue
+            x1, y1 = all_column_positions[i]
+            x2, y2 = all_column_positions[j]
+            col1, col2 = all_column_positions[i], all_column_positions[j]
+
+            # Calculate actual distance in millimeters
+            distance = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5 / scale_factor
+
+            if distance < threshold:
+                # Apply priority rules
+                if col1 in corners or col2 in corners:
+                    to_remove.add(j if col1 in corners else i)
+                elif col1 in t_sections or col2 in t_sections:
+                    to_remove.add(j if col1 in t_sections else i)
+                elif col1 in endpoints or col2 in endpoints:
+                    to_remove.add(j if col1 in endpoints else i)
+                else:  
+                    # If same type, remove the one with the higher y-value
+                    to_remove.add(j if col1[1] < col2[1] else i)
+
+    # Return the filtered list without removed elements
+    return [col for idx, col in enumerate(all_column_positions) if idx not in to_remove]
 def adjust_columns_near_doors_windows(columns_with_dimensions, doors_bbox, windows_bbox):
     """
     Adjust the positions of columns based on the bounding boxes of doors and windows.
@@ -803,7 +977,7 @@ def filter_columns_by_walls(walls_bbox, columns_with_dimensions):
         list: Filtered list of column data [(x, y, width, length)].
     """
     filtered_columns = []
-    margin = 50
+    margin = 10
 
     for col_x, col_y, width, length in columns_with_dimensions:
         in_wall = False  # Flag to check if column is within any wall
@@ -1025,7 +1199,7 @@ def convert_pdf_to_image(pdf_uploaded_file):
     # Upload the PDF file to convertapi.com
     payload = {'StoreFile': 'true'}
     response = requests.post(
-        f"https://v2.convertapi.com/convert/pdf/to/png?Secret={api_key}",
+        f"https://v2.convertapi.com/convert/pdf/to/jpg?Secret={api_key}",
         data=payload,
         files={"file": (pdf_uploaded_file.name, pdf_uploaded_file)}
     )
@@ -1167,7 +1341,7 @@ wall_type = st.selectbox(
     ("Hashed Walls", "Plain Walls")
 )
 
-weights = "hashed_walls_improved.pt" if wall_type == "Hashed Walls" else "wall with corner curve.pt"
+weights = "hashed_walls_improved.pt" if wall_type == "Hashed Walls" else "best walls retrained.pt"
 model_wall = YOLO(weights)
 
 st.title("Image/PDF/CAD File Upload")
@@ -1196,7 +1370,11 @@ if uploaded_file is not None:
         # Process image
         image = Image.open(uploaded_file)
         st.image(image, caption="Uploaded Image", use_container_width=True)
-
+        print(file_type)
+        if file_type == 'png':
+            image.save(save_path, format="PNG")
+        else:
+            image.save(save_path, format="JPEG")
         # Convert PIL Image to OpenCV format
         img_array = np.array(image)
         img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
@@ -1211,10 +1389,10 @@ if uploaded_file is not None:
         os.makedirs(save_dir, exist_ok=True)
 
         # Define save path with a PNG extension
-        save_path = os.path.join(save_dir, f"{base_name}.png")
+        save_path = os.path.join(save_dir, f"{base_name}.jpg")
         try: 
             image = convert_pdf_to_image(uploaded_file)
-            image.save(save_path, format="PNG")
+            image.save(save_path, format="JPEG")
             st.image(image, caption="Converted PDF to Image", use_container_width=True)
 
             # Convert PIL Image to OpenCV format
@@ -1320,6 +1498,7 @@ if uploaded_file is not None:
         annotated_images = []
         original_img, offsets = merge_images(segmented_images, original_width, original_height)
         all_column_positions = []
+        all_endpoints = []
         all_doors = []
         all_wins = []
         all_walls = []
@@ -1327,7 +1506,8 @@ if uploaded_file is not None:
             # Annotate image for wall results
             results_wall = model_wall(img)
             combined_wall_results.append(results_wall)
-            intersections = detect_wall_intersections(results_wall, img)
+            intersections, corners, t_sections, endpoints = detect_wall_intersections(results_wall, img)
+            #intersections = remove_columns_with_corners(wall_intersections, corners, t_sections,endpoints, scale_factor, 500)
             # Create a copy of the original image for wall annotation
             annotated_frame_wall = np.array(img)
 
@@ -1354,7 +1534,13 @@ if uploaded_file is not None:
                 offset_x, offset_y = offsets[i - 1]  # Get the offset for this segmented image
                 absolute_x = col_x + offset_x
                 absolute_y = col_y + offset_y
-                all_column_positions.append((absolute_x, absolute_y)) 
+                all_column_positions.append((absolute_x, absolute_y))
+            for point in endpoints:
+                point_x, point_y = point  # Column position in segmented image
+                offset_x, offset_y = offsets[i - 1]  # Get the offset for this segmented image
+                absolute_x = point_x + offset_x
+                absolute_y = point_y + offset_y
+                all_endpoints.append((absolute_x, absolute_y))
             for box, conf, cls in zip(results_dw[0].boxes.xyxy, results_dw[0].boxes.conf, results_dw[0].boxes.cls):
                 x1, y1, x2, y2 = map(int, box)  # Extract box coordinates
                 label = f"{class_labels[int(cls)]} {conf:.2f}"  # Label for door/window class
@@ -1387,7 +1573,8 @@ if uploaded_file is not None:
         for column in columns_walls:
             x, y = column[0], column[1]  # Extract x, y coordinates
             new_columns.append((x, y))
-        final_cols = remove_columns_with_scale(new_columns, scale_factor, 2000)
+        final_col1 = remove_endpoints_with_scale(new_columns, all_endpoints, scale_factor, 2000)
+        final_cols = remove_columns_with_scale(final_col1, scale_factor, 2000)
         final_cols_set = set(final_cols)
         filtered_columns = [
         column for column in columns_walls if (column[0], column[1]) in final_cols_set
