@@ -1160,7 +1160,7 @@ def plot_window_intersections(annotated_frame, intersections):
 
 def convert_dxf_to_image(dxf_uploaded_file):
     """Convert a DXF file to an image using convertapi.com."""
-    api_key = "secret_178fvDmZ6YFbSaKl"  # Replace with your ConvertAPI key
+    api_key = "secret_2IhVzhTmfBUEbH2w"  # Replace with your ConvertAPI key
 
     # Upload the DXF file to convertapi.com
     payload = {'StoreFile': 'true'}
