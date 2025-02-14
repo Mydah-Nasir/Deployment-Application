@@ -1160,12 +1160,12 @@ def plot_window_intersections(annotated_frame, intersections):
 
 def convert_dxf_to_image(dxf_uploaded_file):
     """Convert a DXF file to an image using convertapi.com."""
-    api_key = "secret_2IhVzhTmfBUEbH2w"  # Replace with your ConvertAPI key
+    api_key = "token_w15wsXem"  # Replace with your ConvertAPI key
 
     # Upload the DXF file to convertapi.com
     payload = {'StoreFile': 'true'}
     response = requests.post(
-    f"https://v2.convertapi.com/convert/dxf/to/png?Secret={api_key}",data=payload,
+    f"https://v2.convertapi.com/convert/dxf/to/png?auth={api_key}",data=payload,
     files={"file": (dxf_uploaded_file.name, dxf_uploaded_file)}
     )
     # st.write(response.status_code)
@@ -1194,12 +1194,12 @@ def convert_pdf_to_image(pdf_uploaded_file):
     Returns:
         PIL.Image object of the first page of the converted PDF.
     """
-    api_key = "secret_178fvDmZ6YFbSaKl"  # Replace with your ConvertAPI key
+    api_key = "token_w15wsXem"  # Replace with your ConvertAPI key
 
     # Upload the PDF file to convertapi.com
     payload = {'StoreFile': 'true'}
     response = requests.post(
-        f"https://v2.convertapi.com/convert/pdf/to/jpg?Secret={api_key}",
+        f"https://v2.convertapi.com/convert/pdf/to/jpg?auth={api_key}",
         data=payload,
         files={"file": (pdf_uploaded_file.name, pdf_uploaded_file)}
     )
@@ -1231,12 +1231,12 @@ def convert_dwg_to_image(dwg_uploaded_file):
     Returns:
         PIL.Image object of the first page of the converted DWG file.
     """
-    api_key = "secret_178fvDmZ6YFbSaKl"  # Replace with your ConvertAPI key
+    api_key = "token_w15wsXem"  # Replace with your ConvertAPI key
 
     # Upload the DWG file to convertapi.com
     payload = {'StoreFile': 'true'}
     response = requests.post(
-        f"https://v2.convertapi.com/convert/dwg/to/png?Secret={api_key}",
+        f"https://v2.convertapi.com/convert/dwg/to/png?auth={api_key}",
         data=payload,
         files={"file": (dwg_uploaded_file.name, dwg_uploaded_file)}
     )
