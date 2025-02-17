@@ -137,8 +137,9 @@ def calculate_scale_factor_dxf(results, conversion_factor, image_path):
         extracted_texts.append(text.strip())  # Append cleaned text
 
         # Extract integers from the text using regex
-        integers = re.findall(r'\d+', text)  # Find all sequences of digits
-        integers = list(map(int, integers))  # Convert to integers
+        integers = re.findall(r'\d+\.\d+|\d+', text)  
+        # Convert to float instead of int to preserve decimal values
+        integers = list(map(float, integers))   # Convert to integers
         extracted_integers.append(integers)
         print(integers)
         # Calculate pixel-to-meter scale if there is exactly one integer
